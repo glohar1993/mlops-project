@@ -63,7 +63,7 @@ df = pd.read_csv('artifacts/raw/data.csv')
 required = ['Operation_Mode','Temperature_C','Vibration_Hz','Power_Consumption_kW',
             'Network_Latency_ms','Packet_Loss_%','Quality_Control_Defect_Rate_%',
             'Production_Speed_units_per_hr','Predictive_Maintenance_Score',
-            'Error_Rate_%','Year','Month','Day','Hour','Efficiency_Category']
+            'Error_Rate_%','Efficiency_Status']
 missing = [c for c in required if c not in df.columns]
 null_pct = df.isnull().mean().max() * 100
 if missing:
