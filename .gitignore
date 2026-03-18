@@ -5,3 +5,8 @@ terraform/*.pem
 terraform/terraform.tfstate
 terraform/terraform.tfstate.backup
 terraform/.terraform/
+terraform/.terraform/providers/
+venv/
+mlruns/
+__pycache__/
+*.pyc
