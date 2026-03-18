@@ -12,8 +12,8 @@ gunicorn
 prometheus-flask-exporter
 prometheus-client
 
-# Experiment tracking (optional — gracefully skipped if absent)
-mlflow
+# Experiment tracking — pinned to match server version (server runs 2.8.1)
+mlflow==2.8.1
 
 # Visualization (training only)
 matplotlib
