@@ -1,0 +1,85 @@
+# ============================================================
+# Production Scaling — HPA + Resource Limits
+# HPA scales pods 1→5 based on CPU usage
+# Resource limits prevent one pod starving others
+# ============================================================
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: flask-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: flask-deployment
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60   # scale up when avg CPU > 60%
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 70   # scale up when avg memory > 70%
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30   # wait 30s before scaling up
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 30
+    scaleDown:
+      stabilizationWindowSeconds: 120  # wait 2min before scaling down
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+
+---
+# Resource Limits Patch for Flask Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flask-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flask-app
+  template:
+    metadata:
+      labels:
+        app: flask-app
+    spec:
+      containers:
+        - name: flask-container
+          image: 824033490704.dkr.ecr.us-east-2.amazonaws.com/mlops-flask-app:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 5001
+          resources:
+            requests:
+              cpu: "250m"       # 0.25 CPU guaranteed
+              memory: "256Mi"   # 256MB guaranteed
+            limits:
+              cpu: "500m"       # max 0.5 CPU
+              memory: "512Mi"   # max 512MB
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5001
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5001
+            initialDelaySeconds: 15
+            periodSeconds: 10

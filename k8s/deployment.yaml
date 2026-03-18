@@ -14,6 +14,7 @@ spec:
     spec:
       containers:
         - name: flask-container
-          image: dataguru97/jenkins-shared-mlops-project:latest
+          image: 824033490704.dkr.ecr.us-east-2.amazonaws.com/mlops-flask-app:latest
+          imagePullPolicy: Always
           ports:
-            - containerPort: 5000
+            - containerPort: 5001

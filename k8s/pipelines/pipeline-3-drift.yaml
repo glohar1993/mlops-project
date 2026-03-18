@@ -1,0 +1,38 @@
+# =============================================================
+# PIPELINE 3: Drift Detection Pipeline
+# Runs as Kubernetes CronJob every 2 minutes
+# Trigger: automatic schedule
+# If drift CRITICAL → calls /retrain on serving app (Pipeline 4)
+# =============================================================
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: drift-detection-pipeline
+  labels:
+    pipeline: "3-drift-detection"
+spec:
+  schedule: "*/2 * * * *"       # Every 2 minutes
+  concurrencyPolicy: Forbid      # Don't run two at same time
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            pipeline: "3-drift-detection"
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: drift-detector
+              image: 824033490704.dkr.ecr.us-east-2.amazonaws.com/mlops-drift-pipeline:latest
+              imagePullPolicy: Always
+              env:
+                - name: SERVING_APP_URL
+                  value: "http://flask-service:5001"
+                - name: PSI_WARNING
+                  value: "0.1"
+                - name: PSI_CRITICAL
+                  value: "0.2"
+                - name: MIN_WINDOW_SIZE
+                  value: "10"

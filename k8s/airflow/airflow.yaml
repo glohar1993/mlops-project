@@ -1,0 +1,168 @@
+# ============================================================
+# Apache Airflow on EKS — Minimal production setup
+# DAGs loaded from S3 bucket (synced by Jenkins pipeline)
+# ============================================================
+
+# ── Namespace ────────────────────────────────────────────────
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: airflow
+
+---
+# ── ConfigMap: Airflow config ─────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: airflow-config
+  namespace: airflow
+data:
+  AIRFLOW__CORE__EXECUTOR:              "LocalExecutor"
+  AIRFLOW__CORE__LOAD_EXAMPLES:         "False"
+  AIRFLOW__CORE__DAGS_FOLDER:           "/opt/airflow/dags"
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN:  "sqlite:////opt/airflow/airflow.db"
+  AIRFLOW__WEBSERVER__EXPOSE_CONFIG:    "False"
+  AIRFLOW__WEBSERVER__RBAC:             "True"
+  MLFLOW_TRACKING_URI:                  "http://3.15.231.90:5000"
+  FLASK_URL:                            "http://a261d35cf8f8a4acebebb622c72750e1-1488940013.us-east-2.elb.amazonaws.com"
+  DATA_PATH:                            "/opt/airflow/data/data.csv"
+  AWS_DEFAULT_REGION:                   "us-east-2"
+
+---
+# ── Persistent Volume for DAGs + DB ───────────────────────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: airflow-pvc
+  namespace: airflow
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+# ── Airflow Deployment ────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow
+  namespace: airflow
+  labels:
+    app: airflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: airflow
+  template:
+    metadata:
+      labels:
+        app: airflow
+    spec:
+      initContainers:
+        # DB init + admin user creation
+        - name: airflow-init
+          image: apache/airflow:2.8.1
+          command:
+            - bash
+            - -c
+            - |
+              airflow db init
+              airflow users create \
+                --username admin \
+                --password admin123 \
+                --firstname MLOps \
+                --lastname Admin \
+                --role Admin \
+                --email mlops@company.com || true
+              # Copy DAGs from S3
+              aws s3 sync s3://mlops-artifacts-prod-824033490704/airflow-dags/ \
+                /opt/airflow/dags/ --region us-east-2 || true
+          envFrom:
+            - configMapRef:
+                name: airflow-config
+          volumeMounts:
+            - name: airflow-storage
+              mountPath: /opt/airflow
+
+      containers:
+        # Webserver
+        - name: airflow-webserver
+          image: apache/airflow:2.8.1
+          command: ["airflow", "webserver"]
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: airflow-config
+          volumeMounts:
+            - name: airflow-storage
+              mountPath: /opt/airflow
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "500m"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+
+        # Scheduler (runs DAGs)
+        - name: airflow-scheduler
+          image: apache/airflow:2.8.1
+          command: ["airflow", "scheduler"]
+          envFrom:
+            - configMapRef:
+                name: airflow-config
+          volumeMounts:
+            - name: airflow-storage
+              mountPath: /opt/airflow
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "500m"
+              memory: "1Gi"
+
+        # DAG sync sidecar — pulls DAGs from S3 every 5 minutes
+        - name: dag-sync
+          image: amazon/aws-cli:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              while true; do
+                aws s3 sync s3://mlops-artifacts-prod-824033490704/airflow-dags/ \
+                  /opt/airflow/dags/ --region us-east-2
+                sleep 300
+              done
+          volumeMounts:
+            - name: airflow-storage
+              mountPath: /opt/airflow
+
+      volumes:
+        - name: airflow-storage
+          persistentVolumeClaim:
+            claimName: airflow-pvc
+
+---
+# ── Airflow Service (LoadBalancer for UI) ─────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: airflow-service
+  namespace: airflow
+spec:
+  type: LoadBalancer
+  selector:
+    app: airflow
+  ports:
+    - port: 8080
+      targetPort: 8080

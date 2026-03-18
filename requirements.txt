@@ -1,7 +1,20 @@
+# Core ML
 pandas
 numpy
 scikit-learn
-flask
 joblib
+
+# Web serving
+flask
+gunicorn
+
+# Observability
+prometheus-flask-exporter
+prometheus-client
+
+# Experiment tracking (optional — gracefully skipped if absent)
+mlflow
+
+# Visualization (training only)
 matplotlib
 seaborn
