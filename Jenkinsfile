@@ -97,6 +97,7 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
             steps {
                 sh """
                     pip3 install --break-system-packages pytest pytest-cov -q
+                    export PATH=\$PATH:/var/jenkins_home/.local/bin
                     pytest tests/ \
                         --cov=src \
                         --cov-report=xml:coverage.xml \
