@@ -17,6 +17,7 @@ prometheus-client
 
 # Experiment tracking — pinned to match server version (server runs 2.8.1)
 mlflow==2.8.1
+boto3
 
 # Visualization (training only)
 matplotlib
