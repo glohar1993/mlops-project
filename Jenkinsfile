@@ -55,8 +55,7 @@ pipeline {
                 stage('Data Quality') {
                     steps {
                         sh """
-                            pip3 install --break-system-packages setuptools -q
-                            pip3 install --break-system-packages -r requirements.txt -q
+                            pip3 install --break-system-packages pandas -q
                             export PATH=\$PATH:/var/jenkins_home/.local/bin
                             python3 -c "
 import sys, pandas as pd

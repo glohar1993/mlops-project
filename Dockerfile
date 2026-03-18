@@ -18,7 +18,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install Python deps first (layer cache optimization)
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt && \
+RUN pip install --no-cache-dir setuptools && \
+    pip install --no-cache-dir -r requirements.txt && \
     pip install --no-cache-dir gunicorn
 
 # Copy application code
