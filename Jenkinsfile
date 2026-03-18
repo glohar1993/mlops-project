@@ -56,12 +56,13 @@ pipeline {
                     steps {
                         sh """
                             pip3 install --break-system-packages -r requirements.txt -q
+                            export PATH=\$PATH:/var/jenkins_home/.local/bin
                             python3 -c "
 from src.data_validator import DataValidator
 import pandas as pd
 df = pd.read_csv('artifacts/raw/data.csv')
-v  = DataValidator(df)
-report = v.run_all_checks()
+v  = DataValidator()
+report = v.validate(df)
 print(report)
 if report.get('has_errors'):
     raise Exception('Data validation FAILED — blocking build')
@@ -74,6 +75,7 @@ print('Data validation PASSED')
                     steps {
                         sh """
                             pip3 install --break-system-packages flake8 -q
+                            export PATH=\$PATH:/var/jenkins_home/.local/bin
                             flake8 src/ application.py \
                                 --max-line-length=120 \
                                 --exclude=venv,__pycache__,.git \
