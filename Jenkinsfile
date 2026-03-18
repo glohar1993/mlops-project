@@ -58,15 +58,21 @@ pipeline {
                             pip3 install --break-system-packages -r requirements.txt -q
                             export PATH=\$PATH:/var/jenkins_home/.local/bin
                             python3 -c "
-from src.data_validator import DataValidator
-import pandas as pd
+import sys, pandas as pd
 df = pd.read_csv('artifacts/raw/data.csv')
-v  = DataValidator()
-report = v.validate(df)
-print(report)
-if report.get('has_errors'):
-    raise Exception('Data validation FAILED — blocking build')
-print('Data validation PASSED')
+required = ['Operation_Mode','Temperature_C','Vibration_Hz','Power_Consumption_kW',
+            'Network_Latency_ms','Packet_Loss_%','Quality_Control_Defect_Rate_%',
+            'Production_Speed_units_per_hr','Predictive_Maintenance_Score',
+            'Error_Rate_%','Year','Month','Day','Hour','Efficiency_Category']
+missing = [c for c in required if c not in df.columns]
+null_pct = df.isnull().mean().max() * 100
+if missing:
+    print(f'FAIL: Missing columns: {missing}'); sys.exit(1)
+if len(df) < 100:
+    print(f'FAIL: Too few rows: {len(df)}'); sys.exit(1)
+if null_pct > 20:
+    print(f'FAIL: High null rate: {null_pct:.1f}%'); sys.exit(1)
+print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%={null_pct:.2f}')
 "
                         """
                     }
