@@ -42,9 +42,9 @@ pipeline {
         stage('Checkout') {
             steps {
                 gitCheckout(
-                    'https://github.com/data-guru0/MLOPS-Project-Code.git',
+                    'https://github.com/glohar1993/mlops-project.git',
                     '*/main',
-                    'github-token'
+                    'github-token-git'
                 )
             }
         }
@@ -55,7 +55,7 @@ pipeline {
                 stage('Data Quality') {
                     steps {
                         sh """
-                            pip3 install -r requirements.txt -q
+                            pip3 install --break-system-packages -r requirements.txt -q
                             python3 -c "
 from src.data_validator import DataValidator
 import pandas as pd
@@ -73,7 +73,7 @@ print('Data validation PASSED')
                 stage('Code Lint') {
                     steps {
                         sh """
-                            pip3 install flake8 -q
+                            pip3 install --break-system-packages flake8 -q
                             flake8 src/ application.py \
                                 --max-line-length=120 \
                                 --exclude=venv,__pycache__,.git \
@@ -88,7 +88,7 @@ print('Data validation PASSED')
         stage('Unit Tests') {
             steps {
                 sh """
-                    pip3 install pytest pytest-cov -q
+                    pip3 install --break-system-packages pytest pytest-cov -q
                     pytest tests/ \
                         --cov=src \
                         --cov-report=xml:coverage.xml \
