@@ -1,3 +1,7 @@
 venv/
 MLOPS_PROJECT_9.egg-info/
-logs/
+logs/terraform/jenkins-key.pem
+terraform/*.pem
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/.terraform/
