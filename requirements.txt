@@ -1,3 +1,6 @@
+# Build tools (required by mlflow and other packages)
+setuptools
+
 # Core ML
 pandas
 numpy
