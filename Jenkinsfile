@@ -215,16 +215,23 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
                         --from-literal=ENVIRONMENT=staging \
                         -n staging --dry-run=client -o yaml | kubectl apply -f -
 
+                    # Scale down staging first to avoid HPA-inflated replica counts during rollout
+                    kubectl scale deployment ${APP_NAME} -n staging --replicas=2 || true
+
                     # Strip hardcoded 'namespace: default' from manifests before applying to staging
                     sed 's/namespace: default/namespace: staging/g' k8s/deployment.yaml | kubectl apply -f - -n staging
                     sed 's/namespace: default/namespace: staging/g' k8s/service.yaml    | kubectl apply -f - -n staging
+
+                    # Cap staging HPA at 2 replicas — staging is not a traffic environment
+                    kubectl patch hpa flask-hpa -n staging \
+                        -p '{"spec":{"minReplicas":2,"maxReplicas":2}}' 2>/dev/null || true
 
                     kubectl set image deployment/${APP_NAME} \
                         flask-container=${ECR_REGISTRY}/mlops-flask-app:\${GIT_COMMIT_SHORT} \
                         -n staging
 
                     kubectl rollout status deployment/${APP_NAME} \
-                        -n staging --timeout=300s
+                        -n staging --timeout=600s
                 """
             }
         }
