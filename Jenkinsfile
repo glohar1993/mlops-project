@@ -120,7 +120,8 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
             }
         }
 
-        // ── STAGE 3b: Full Test Suite (contract, governance, fairness, security) ─
+        // ── STAGE 3b: Full Test Suite (governance, fairness, security) ─
+        // contract + integration tests require a live server — run in staging only
         stage('Full Test Suite') {
             when { branch 'main' }
             steps {
@@ -130,6 +131,8 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
                     pytest tests/ \
                         --ignore=tests/e2e \
                         --ignore=tests/load \
+                        --ignore=tests/contract \
+                        --ignore=tests/integration \
                         --cov=src \
                         --cov-report=xml:coverage-full.xml \
                         --junitxml=test-results-full.xml \
