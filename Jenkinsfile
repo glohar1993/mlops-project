@@ -296,7 +296,7 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
                     input(
                         message: "Deploy commit ${env.GIT_COMMIT_SHORT} to PRODUCTION?",
                         ok: 'Deploy to Production',
-                        submitter: 'admin,mlops-lead'
+                        submitter: 'admin,mlops-lead,glohar'
                     )
                 }
             }
