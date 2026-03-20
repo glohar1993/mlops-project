@@ -68,11 +68,6 @@ spec:
       volumes:
         - name: prometheus-multiproc
           emptyDir: {}
-        # Override application.py from ConfigMap — allows code updates
-        # without rebuilding the Docker image (dev/hotfix workflow)
-        - name: flask-app-code
-          configMap:
-            name: flask-app-code
 
       containers:
         - name: flask-container
@@ -124,15 +119,6 @@ spec:
           volumeMounts:
             - name: prometheus-multiproc
               mountPath: /tmp/prometheus_multiproc
-            - name: flask-app-code
-              mountPath: /app/application.py
-              subPath: application.py
-            - name: flask-app-code
-              mountPath: /app/src/feature_registry.py
-              subPath: feature_registry.py
-            - name: flask-app-code
-              mountPath: /app/src/model_training.py
-              subPath: model_training.py
 
           # Resource guarantees — prevents noisy-neighbor starvation
           resources:
