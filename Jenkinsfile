@@ -326,11 +326,13 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
                     kubectl apply -f k8s/observability/alertmanager.yaml
                     kubectl create namespace amazon-cloudwatch --dry-run=client -o yaml | kubectl apply -f -
                     kubectl apply -f k8s/observability/fluentbit-cloudwatch.yaml
-                    kubectl apply -f k8s/feature-store/feast-feature-store.yaml || true
-                    kubectl apply -f k8s/pipelines/pipeline-3-drift.yaml || true
-                    kubectl apply -f k8s/pipelines/pipeline-scaling.yaml || true
-                    # Apply A/B testing infrastructure
-                    kubectl apply -f k8s/ab-testing/ab-analysis-cronjob.yaml || true
+                    # NOTE: feast-feature-store and drift-pipeline ECR images not yet built
+                    # These are skipped to avoid ImagePullBackOff consuming cluster resources
+                    # kubectl apply -f k8s/feature-store/feast-feature-store.yaml
+                    # kubectl apply -f k8s/pipelines/pipeline-3-drift.yaml
+                    # kubectl apply -f k8s/pipelines/pipeline-scaling.yaml
+                    # kubectl apply -f k8s/ab-testing/ab-analysis-cronjob.yaml
+                    echo "Supplementary components skipped (feast/drift ECR images pending)"
                 """
             }
         }
