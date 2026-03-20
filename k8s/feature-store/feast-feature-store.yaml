@@ -24,7 +24,7 @@ metadata:
     component: feature-store
     tier: online-store
 spec:
-  replicas: 1
+  replicas: 0   # SUSPENDED: enable after feast-feature-server ECR image is built
   selector:
     matchLabels:
       app: redis-feature-store
@@ -76,7 +76,7 @@ metadata:
     component: feature-store
     tier: serving
 spec:
-  replicas: 2
+  replicas: 0   # SUSPENDED: enable after feast-feature-server ECR image is built
   selector:
     matchLabels:
       app: feast-feature-server
@@ -144,6 +144,7 @@ metadata:
     tier: materialization
 spec:
   schedule: "*/5 * * * *"
+  suspend: true               # SUSPENDED: enable after feast-feature-server ECR image is built
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3

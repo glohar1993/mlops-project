@@ -24,10 +24,11 @@ metadata:
     pipeline: "3-drift-detection"
     component: observability
 spec:
-  schedule: "*/2 * * * *"
+  schedule: "*/30 * * * *"   # Run every 30 min (not every 2 min — too aggressive for t3.medium)
+  suspend: true               # SUSPENDED: drift-pipeline ECR image not yet built — enable after pushing image
   concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 5
-  failedJobsHistoryLimit:     5
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit:     3
   jobTemplate:
     spec:
       backoffLimit: 1
