@@ -57,7 +57,10 @@ ANOMALOUS_PAYLOAD = {
     "Error_Rate_%": 22.0,
 }
 
-HEADERS = {"Content-Type": "application/json"}
+HEADERS = {
+    "Content-Type": "application/json",
+    "X-API-Key": os.getenv("API_KEY", "mlops-admin-key-dev"),
+}
 
 
 def _jitter(payload: dict, pct: float = 0.05) -> dict:
