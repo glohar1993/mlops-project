@@ -224,12 +224,15 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
             when { branch 'main' }
             steps {
                 sh """
-                    kubectl wait pod \
-                        -l app=flask-app -n staging \
-                        --for=condition=Ready --timeout=120s
+                    # Wait for deployment rollout to fully complete (handles old pod termination)
+                    kubectl rollout status deployment/${APP_NAME} -n staging --timeout=180s
 
+                    # Get the first RUNNING pod (skip Terminating pods)
                     STAGING_POD=\$(kubectl get pod -n staging -l app=flask-app \
-                                   -o jsonpath='{.items[0].metadata.name}')
+                        --field-selector=status.phase=Running \
+                        -o jsonpath='{.items[0].metadata.name}')
+
+                    echo "Testing pod: \$STAGING_POD"
 
                     # Health check
                     kubectl exec \$STAGING_POD -n staging -- \
