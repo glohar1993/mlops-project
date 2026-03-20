@@ -142,7 +142,17 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
             }
         }
 
-        // ── STAGE 4: Security Scan (Trivy) ─────────────────────
+        // ── STAGE 4: Build + Push to ECR ───────────────────────
+        stage('Build & Push to ECR') {
+            when {
+                anyOf { branch 'main'; branch 'release/*' }
+            }
+            steps {
+                dockerBuildAndPush(ECR_REGISTRY, 'mlops-flask-app', AWS_REGION)
+            }
+        }
+
+        // ── STAGE 4b: Security Scan (Trivy) — after image is built ──
         stage('Security Scan') {
             when { anyOf { branch 'main'; branch 'release/*' } }
             steps {
@@ -154,6 +164,10 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
                     fi
                     export PATH=\$HOME/bin:\$PATH
 
+                    # Re-authenticate ECR before scan
+                    aws ecr get-login-password --region ${AWS_REGION} | \
+                        docker login --username AWS --password-stdin ${ECR_REGISTRY}
+
                     # Scan the built image — fail on HIGH or CRITICAL CVEs
                     trivy image \
                         --severity HIGH,CRITICAL \
@@ -162,16 +176,6 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
                         --no-progress \
                         ${ECR_REGISTRY}/mlops-flask-app:\${GIT_COMMIT_SHORT}
                 """
-            }
-        }
-
-        // ── STAGE 5: Build + Push to ECR ───────────────────────
-        stage('Build & Push to ECR') {
-            when {
-                anyOf { branch 'main'; branch 'release/*' }
-            }
-            steps {
-                dockerBuildAndPush(ECR_REGISTRY, 'mlops-flask-app', AWS_REGION)
             }
         }
 
