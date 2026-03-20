@@ -28,6 +28,8 @@ spec:
       exclude: |
         feature-store/**
         argocd/**
+        **/*.json
+        **/*.md
 
   # --- Destination: EKS default namespace ---
   destination:
