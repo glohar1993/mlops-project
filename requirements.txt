@@ -3,9 +3,9 @@ setuptools
 
 # Core ML
 pandas
-numpy>=1.24,<2.0
-scikit-learn<1.8
-pyarrow>=4.0.0,<14.0
+numpy==1.26.4
+scikit-learn==1.6.1
+pyarrow==13.0.0
 joblib
 
 # Web serving
@@ -36,4 +36,4 @@ pytest-mock>=3.10
 # scipy>=1.10
 
 # Explainability
-# shap
+shap
