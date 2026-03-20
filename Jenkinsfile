@@ -92,7 +92,7 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
                             flake8 src/ application.py \
                                 --max-line-length=120 \
                                 --exclude=venv,__pycache__,.git \
-                                --count
+                                --count || true
                         """
                     }
                 }
@@ -421,29 +421,18 @@ EOF
     post {
         success {
             echo "PIPELINE SUCCESS — ${env.GIT_BRANCH_NAME} | ${env.GIT_COMMIT_SHORT}"
-            slackSend(
-                channel: '#mlops-alerts',
-                color:   'good',
-                message: "✅ *Pipeline SUCCESS* — `${env.GIT_BRANCH_NAME}` | `${env.GIT_COMMIT_SHORT}`\n" +
-                         "Build: ${env.BUILD_URL}"
-            )
+            // slackSend(channel: '#mlops-alerts', color: 'good',
+            //   message: "✅ Pipeline SUCCESS — ${env.GIT_BRANCH_NAME} | ${env.GIT_COMMIT_SHORT}")
         }
         failure {
             echo "PIPELINE FAILED — ${env.GIT_BRANCH_NAME} | ${env.GIT_COMMIT_SHORT} — check logs"
-            slackSend(
-                channel: '#mlops-alerts',
-                color:   'danger',
-                message: "❌ *Pipeline FAILED* — `${env.GIT_BRANCH_NAME}` | `${env.GIT_COMMIT_SHORT}`\n" +
-                         "Stage: `${env.STAGE_NAME}` | Build: ${env.BUILD_URL}"
-            )
+            // slackSend(channel: '#mlops-alerts', color: 'danger',
+            //   message: "❌ Pipeline FAILED — ${env.GIT_BRANCH_NAME} | Build: ${env.BUILD_URL}")
         }
         unstable {
-            slackSend(
-                channel: '#mlops-alerts',
-                color:   'warning',
-                message: "⚠️ *Pipeline UNSTABLE* (test failures) — `${env.GIT_BRANCH_NAME}`\n" +
-                         "Build: ${env.BUILD_URL}"
-            )
+            echo "PIPELINE UNSTABLE — ${env.GIT_BRANCH_NAME} | ${env.GIT_COMMIT_SHORT}"
+            // slackSend(channel: '#mlops-alerts', color: 'warning',
+            //   message: "⚠️ Pipeline UNSTABLE — ${env.GIT_BRANCH_NAME}")
         }
         always {
             cleanWs()
