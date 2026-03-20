@@ -265,6 +265,10 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
                     pip3 install --break-system-packages locust -q
                     export PATH=\$PATH:/var/jenkins_home/.local/bin
 
+                    # Ensure staging has 2 replicas before load test
+                    kubectl scale deployment ${APP_NAME} -n staging --replicas=2
+                    kubectl rollout status deployment/${APP_NAME} -n staging --timeout=120s
+
                     # Resolve staging LoadBalancer hostname (EKS assigns a hostname, not IP)
                     STAGING_URL=\$(kubectl get svc flask-service -n staging \
                         -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
@@ -275,11 +279,11 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
 
                     echo "Load testing: http://\${STAGING_URL}"
 
-                    # Headless run — exits non-zero if SLOs breached (exit code set in locustfile)
+                    # 20 users × 60s — realistic for t3.medium 2-pod staging
                     TARGET_URL=http://\${STAGING_URL} \
                     locust -f tests/load/locustfile.py \
                         --headless \
-                        -u 50 -r 5 \
+                        -u 20 -r 5 \
                         --run-time 60s \
                         --host http://\${STAGING_URL} \
                         --only-summary \
