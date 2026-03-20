@@ -128,11 +128,7 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
                 sh """
                     pip3 install --break-system-packages pytest pytest-cov numpy pandas scikit-learn joblib flask -q
                     export PATH=\$PATH:/var/jenkins_home/.local/bin
-                    pytest tests/ \
-                        --ignore=tests/e2e \
-                        --ignore=tests/load \
-                        --ignore=tests/contract \
-                        --ignore=tests/integration \
+                    pytest tests/unit/ tests/governance/ tests/fairness/ \
                         --cov=src \
                         --cov-report=xml:coverage-full.xml \
                         --junitxml=test-results-full.xml \
