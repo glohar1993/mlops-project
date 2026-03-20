@@ -28,6 +28,7 @@ spec:
       exclude: |
         feature-store/**
         argocd/**
+        pipelines/**
         **/*.json
         **/*.md
 
