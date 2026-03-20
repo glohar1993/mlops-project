@@ -1,0 +1,175 @@
+# =============================================================
+# Feature Store — Feast on Kubernetes (Finance Domain)
+# =============================================================
+# Architecture:
+#   Online Store  : Redis (sub-millisecond feature retrieval)
+#   Offline Store : S3 via Spark/Parquet (batch training)
+#   Registry      : S3 (feature definitions versioned)
+#   Feast Core    : Manages materialization + metadata
+#
+# Finance domain features stored:
+#   - Equipment operational telemetry (14 features)
+#   - Rolling aggregates (5m, 1h, 24h windows)
+#   - Entity key: equipment_id
+# =============================================================
+
+---
+# Redis Online Store
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-feature-store
+  namespace: default
+  labels:
+    component: feature-store
+    tier: online-store
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-feature-store
+  template:
+    metadata:
+      labels:
+        app: redis-feature-store
+    spec:
+      containers:
+        - name: redis
+          image: redis:7.2-alpine
+          ports:
+            - containerPort: 6379
+          command: ["redis-server", "--requirepass", "feast-redis-secret"]
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "500m"
+              memory: "1Gi"
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "-a", "feast-redis-secret", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-feature-store
+  namespace: default
+spec:
+  selector:
+    app: redis-feature-store
+  ports:
+    - port: 6379
+      targetPort: 6379
+
+---
+# Feast Feature Server (online serving)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: feast-feature-server
+  namespace: default
+  labels:
+    component: feature-store
+    tier: serving
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: feast-feature-server
+  template:
+    metadata:
+      labels:
+        app: feast-feature-server
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "6566"
+    spec:
+      containers:
+        - name: feast-server
+          image: 824033490704.dkr.ecr.us-east-2.amazonaws.com/feast-feature-server:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 6566   # gRPC + HTTP REST
+          env:
+            - name: FEAST_FEATURE_STORE_YAML_PATH
+              value: "/app/feature_store.yaml"
+            - name: REDIS_URL
+              value: "redis://:feast-redis-secret@redis-feature-store:6379"
+            - name: AWS_DEFAULT_REGION
+              value: "us-east-2"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "2Gi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 6566
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: feast-feature-server
+  namespace: default
+spec:
+  selector:
+    app: feast-feature-server
+  ports:
+    - name: http
+      port: 6566
+      targetPort: 6566
+  type: ClusterIP
+
+---
+# Feature Materialization CronJob
+# Runs every 5 minutes: offline store (S3 Parquet) → online store (Redis)
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: feast-materialization
+  namespace: default
+  labels:
+    component: feature-store
+    tier: materialization
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: feast-materialize
+              image: 824033490704.dkr.ecr.us-east-2.amazonaws.com/feast-feature-server:latest
+              command:
+                - python3
+                - -c
+                - |
+                  from datetime import datetime, timedelta
+                  import feast
+                  store = feast.FeatureStore(repo_path="/app")
+                  # Materialize last 6 hours of features into Redis
+                  store.materialize(
+                      start_date=datetime.utcnow() - timedelta(hours=6),
+                      end_date=datetime.utcnow()
+                  )
+                  print("Materialization complete")
+              env:
+                - name: FEAST_FEATURE_STORE_YAML_PATH
+                  value: "/app/feature_store.yaml"
+                - name: AWS_DEFAULT_REGION
+                  value: "us-east-2"
