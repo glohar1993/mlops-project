@@ -206,8 +206,9 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
                 sh """
                     kubectl create namespace staging --dry-run=client -o yaml | kubectl apply -f -
 
-                    kubectl apply -f k8s/deployment.yaml -n staging
-                    kubectl apply -f k8s/service.yaml    -n staging
+                    # Strip hardcoded 'namespace: default' from manifests before applying to staging
+                    sed 's/namespace: default/namespace: staging/g' k8s/deployment.yaml | kubectl apply -f - -n staging
+                    sed 's/namespace: default/namespace: staging/g' k8s/service.yaml    | kubectl apply -f - -n staging
 
                     kubectl set image deployment/${APP_NAME} \
                         flask-container=${ECR_REGISTRY}/mlops-flask-app:\${GIT_COMMIT_SHORT} \
