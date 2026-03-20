@@ -147,10 +147,12 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
             when { anyOf { branch 'main'; branch 'release/*' } }
             steps {
                 sh """
-                    # Install Trivy if not present
-                    if ! command -v trivy &>/dev/null; then
-                        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+                    # Install Trivy to user-writable location
+                    mkdir -p \$HOME/bin
+                    if ! command -v trivy &>/dev/null && [ ! -f "\$HOME/bin/trivy" ]; then
+                        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b \$HOME/bin
                     fi
+                    export PATH=\$HOME/bin:\$PATH
 
                     # Scan the built image — fail on HIGH or CRITICAL CVEs
                     trivy image \
