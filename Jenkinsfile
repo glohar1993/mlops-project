@@ -340,6 +340,8 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
             when { branch 'main' }
             steps {
                 sh """
+                    set +e   # ArgoCD sync is best-effort — production was already deployed via kubectl
+
                     # Install argocd CLI to user-writable location
                     mkdir -p \$HOME/bin
                     if ! command -v argocd &>/dev/null && [ ! -f "\$HOME/bin/argocd" ]; then
@@ -356,27 +358,21 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
 
                     # Get ArgoCD admin password
                     ARGOCD_PWD=\$(kubectl -n argocd get secret argocd-initial-admin-secret \
-                        -o jsonpath='{.data.password}' | base64 -d)
+                        -o jsonpath='{.data.password}' | base64 -d 2>/dev/null)
 
-                    # Login via local port-forward
+                    # Login via local port-forward (non-fatal)
                     argocd login localhost:18443 \
                         --username admin \
-                        --password \$ARGOCD_PWD \
-                        --insecure
-
-                    # Trigger sync — ArgoCD applies all k8s/ changes from Git
+                        --password "\$ARGOCD_PWD" \
+                        --insecure && \
                     argocd app sync mlops-production \
-                        --prune \
-                        --timeout 120 \
-                        --assumeYes || true
-
-                    # Wait for healthy (non-blocking)
-                    argocd app wait mlops-production \
-                        --health \
-                        --timeout 120 || true
+                        --prune --timeout 120 --assumeYes && \
+                    argocd app wait mlops-production --health --timeout 120 && \
+                    echo "ArgoCD sync complete" || \
+                    echo "ArgoCD sync skipped/failed — k8s deploy already applied via kubectl"
 
                     kill \$PF_PID 2>/dev/null || true
-                    echo "ArgoCD sync complete — all k8s manifests applied from Git"
+                    exit 0   # Always succeed — ArgoCD is informational
                 """
             }
         }
