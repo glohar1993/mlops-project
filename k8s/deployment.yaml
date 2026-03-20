@@ -120,13 +120,13 @@ spec:
             - name: prometheus-multiproc
               mountPath: /tmp/prometheus_multiproc
 
-          # Resource guarantees — prevents noisy-neighbor starvation
+          # Resource guarantees — t3.medium friendly (2 vCPU, 4GB)
           resources:
             requests:
-              cpu: "250m"     # 0.25 CPU guaranteed
+              cpu: "100m"     # 0.1 CPU guaranteed (was 250m, too high for cluster)
               memory: "256Mi" # 256MB guaranteed
             limits:
-              cpu: "1000m"    # max 1 CPU (burst allowed)
+              cpu: "500m"     # max 0.5 CPU burst
               memory: "1Gi"   # max 1GB (OOM kill above this)
 
           # Startup probe — gives Flask/MLflow 150s to load model before
