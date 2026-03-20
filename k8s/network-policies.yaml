@@ -1,0 +1,203 @@
+# =============================================================
+# Kubernetes Network Policies — MLOps Pod Isolation
+# =============================================================
+# Principle: default-deny, explicit allow.
+# Each policy restricts which pods can talk to which pods/ports.
+# This limits blast radius if any component is compromised.
+# =============================================================
+
+# ── 1. Flask App ──────────────────────────────────────────────
+# Receives: HTTP from LoadBalancer (any source) on 5001
+# Sends:    MLflow EC2 (5000), Airflow (8080), AWS APIs (443), DNS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: flask-network-policy
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: flask-app
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+    # Allow all inbound traffic on port 5001 (LoadBalancer + Prometheus scrape)
+    - ports:
+        - protocol: TCP
+          port: 5001
+
+  egress:
+    # DNS resolution (required for all K8s service name lookups)
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+    # MLflow tracking server — EC2 instance (external)
+    - ports:
+        - protocol: TCP
+          port: 5000
+
+    # Airflow REST API — in airflow namespace
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: airflow
+      ports:
+        - protocol: TCP
+          port: 8080
+
+    # AWS S3, ECR, Secrets Manager, CloudWatch — all via HTTPS
+    - ports:
+        - protocol: TCP
+          port: 443
+
+    # MLflow model artifact download (HTTP fallback)
+    - ports:
+        - protocol: TCP
+          port: 80
+
+---
+# ── 2. Prometheus ─────────────────────────────────────────────
+# Receives: HTTP on 9090 from Grafana and NodePort
+# Sends:    scrape Flask (5001), Grafana (3000), Alertmanager (9093)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: prometheus-network-policy
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: prometheus
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+    # Grafana queries Prometheus
+    - from:
+        - podSelector:
+            matchLabels:
+              app: grafana
+      ports:
+        - protocol: TCP
+          port: 9090
+    # NodePort access for admin/dashboards
+    - ports:
+        - protocol: TCP
+          port: 9090
+
+  egress:
+    # DNS
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Scrape Flask pods
+    - to:
+        - podSelector:
+            matchLabels:
+              app: flask-app
+      ports:
+        - protocol: TCP
+          port: 5001
+    # Scrape Grafana
+    - to:
+        - podSelector:
+            matchLabels:
+              app: grafana
+      ports:
+        - protocol: TCP
+          port: 3000
+    # Send alerts to Alertmanager
+    - to:
+        - podSelector:
+            matchLabels:
+              app: alertmanager
+      ports:
+        - protocol: TCP
+          port: 9093
+
+---
+# ── 3. Grafana ────────────────────────────────────────────────
+# Receives: HTTP on 3000 from NodePort
+# Sends:    query Prometheus (9090)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: grafana-network-policy
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: grafana
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 3000
+
+  egress:
+    # DNS
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Query Prometheus
+    - to:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - protocol: TCP
+          port: 9090
+
+---
+# ── 4. Alertmanager ───────────────────────────────────────────
+# Receives: alerts from Prometheus (9093)
+# Sends:    Slack/PagerDuty webhooks (HTTPS)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: alertmanager-network-policy
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: alertmanager
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - protocol: TCP
+          port: 9093
+    - ports:
+        - protocol: TCP
+          port: 9093
+
+  egress:
+    # DNS
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Slack/PagerDuty webhooks
+    - ports:
+        - protocol: TCP
+          port: 443

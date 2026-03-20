@@ -16,6 +16,13 @@ def MLFLOW_URL   = "http://3.15.231.90:5000"
 pipeline {
     agent any
 
+    parameters {
+        booleanParam(name: 'AB_TEST_ENABLED', defaultValue: false,
+                     description: 'Deploy Model B for A/B testing (80/20 traffic split)')
+        booleanParam(name: 'FORCE_RETRAIN', defaultValue: false,
+                     description: 'Force model retraining even if no drift detected')
+    }
+
     options {
         buildDiscarder(logRotator(numToKeepStr: '10'))
         timestamps()
@@ -85,7 +92,7 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
                             flake8 src/ application.py \
                                 --max-line-length=120 \
                                 --exclude=venv,__pycache__,.git \
-                                --count || true
+                                --count
                         """
                     }
                 }
@@ -96,13 +103,14 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
         stage('Unit Tests') {
             steps {
                 sh """
-                    pip3 install --break-system-packages pytest pytest-cov -q
+                    pip3 install --break-system-packages pytest pytest-cov numpy pandas scikit-learn joblib flask -q
                     export PATH=\$PATH:/var/jenkins_home/.local/bin
-                    pytest tests/ \
+                    pytest tests/unit/ \
                         --cov=src \
                         --cov-report=xml:coverage.xml \
+                        --cov-fail-under=40 \
                         --junitxml=test-results.xml \
-                        -v || true
+                        -v --tb=short -p no:warnings
                 """
             }
             post {
@@ -112,7 +120,51 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
             }
         }
 
-        // ── STAGE 4: Security Scan + Build + Push to ECR ───────
+        // ── STAGE 3b: Full Test Suite (contract, governance, fairness, security) ─
+        stage('Full Test Suite') {
+            when { branch 'main' }
+            steps {
+                sh """
+                    pip3 install --break-system-packages pytest pytest-cov numpy pandas scikit-learn joblib flask -q
+                    export PATH=\$PATH:/var/jenkins_home/.local/bin
+                    pytest tests/ \
+                        --ignore=tests/e2e \
+                        --ignore=tests/load \
+                        --cov=src \
+                        --cov-report=xml:coverage-full.xml \
+                        --junitxml=test-results-full.xml \
+                        -v --tb=short -p no:warnings
+                """
+            }
+            post {
+                always {
+                    junit allowEmptyResults: true, testResults: 'test-results-full.xml'
+                }
+            }
+        }
+
+        // ── STAGE 4: Security Scan (Trivy) ─────────────────────
+        stage('Security Scan') {
+            when { anyOf { branch 'main'; branch 'release/*' } }
+            steps {
+                sh """
+                    # Install Trivy if not present
+                    if ! command -v trivy &>/dev/null; then
+                        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+                    fi
+
+                    # Scan the built image — fail on HIGH or CRITICAL CVEs
+                    trivy image \
+                        --severity HIGH,CRITICAL \
+                        --exit-code 1 \
+                        --format table \
+                        --no-progress \
+                        ${ECR_REGISTRY}/mlops-flask-app:\${GIT_COMMIT_SHORT}
+                """
+            }
+        }
+
+        // ── STAGE 5: Build + Push to ECR ───────────────────────
         stage('Build & Push to ECR') {
             when {
                 anyOf { branch 'main'; branch 'release/*' }
@@ -186,7 +238,38 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
             }
         }
 
-        // ── STAGE 7: Manual Approval Gate ─────────────────────
+        // ── STAGE 7: Load Test — SLO gate (50 users × 60s on Staging) ─
+        stage('Load Test (SLO Check)') {
+            when { branch 'main' }
+            steps {
+                sh """
+                    pip3 install --break-system-packages locust -q
+                    export PATH=\$PATH:/var/jenkins_home/.local/bin
+
+                    # Resolve staging LoadBalancer hostname (EKS assigns a hostname, not IP)
+                    STAGING_URL=\$(kubectl get svc flask-service -n staging \
+                        -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+                    if [ -z "\$STAGING_URL" ]; then
+                        STAGING_URL=\$(kubectl get svc flask-service -n staging \
+                            -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+                    fi
+
+                    echo "Load testing: http://\${STAGING_URL}"
+
+                    # Headless run — exits non-zero if SLOs breached (exit code set in locustfile)
+                    TARGET_URL=http://\${STAGING_URL} \
+                    locust -f tests/load/locustfile.py \
+                        --headless \
+                        -u 50 -r 5 \
+                        --run-time 60s \
+                        --host http://\${STAGING_URL} \
+                        --only-summary \
+                        --exit-code-on-error 1
+                """
+            }
+        }
+
+        // ── STAGE 8: Manual Approval Gate ─────────────────────
         stage('Approval: Deploy to Production?') {
             when { branch 'main' }
             steps {
@@ -207,11 +290,77 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
                 k8sDeploy('default', env.GIT_COMMIT_SHORT, ECR_REGISTRY, APP_NAME)
 
                 sh """
+                    kubectl apply -f k8s/network-policies.yaml
                     kubectl apply -f k8s/observability/prometheus.yaml
                     kubectl apply -f k8s/observability/grafana.yaml
                     kubectl apply -f k8s/observability/alertmanager.yaml
+                    kubectl create namespace amazon-cloudwatch --dry-run=client -o yaml | kubectl apply -f -
+                    kubectl apply -f k8s/observability/fluentbit-cloudwatch.yaml
+                    kubectl apply -f k8s/feature-store/feast-feature-store.yaml
                     kubectl apply -f k8s/pipelines/pipeline-3-drift.yaml
                     kubectl apply -f k8s/pipelines/pipeline-scaling.yaml
+                    # Apply A/B testing infrastructure
+                    kubectl apply -f k8s/ab-testing/ab-analysis-cronjob.yaml
+                """
+            }
+        }
+
+        // ── STAGE 8b: ArgoCD Sync — GitOps self-heal trigger ───
+        stage('ArgoCD Sync') {
+            when { branch 'main' }
+            steps {
+                sh """
+                    # Install argocd CLI if not present
+                    if ! command -v argocd &>/dev/null; then
+                        curl -sSL -o /usr/local/bin/argocd \
+                            https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+                        chmod +x /usr/local/bin/argocd
+                    fi
+
+                    # Login to ArgoCD (internal cluster service)
+                    ARGOCD_PWD=\$(kubectl -n argocd get secret argocd-initial-admin-secret \
+                        -o jsonpath='{.data.password}' | base64 -d)
+
+                    argocd login argocd-server.argocd.svc.cluster.local:443 \
+                        --username admin \
+                        --password \$ARGOCD_PWD \
+                        --insecure
+
+                    # Trigger sync — ArgoCD applies all k8s/ changes from Git
+                    argocd app sync mlops-production \
+                        --prune \
+                        --timeout 120 \
+                        --assumeYes
+
+                    # Wait for healthy
+                    argocd app wait mlops-production \
+                        --health \
+                        --timeout 180
+
+                    echo "ArgoCD sync complete — all k8s manifests applied from Git"
+                """
+            }
+        }
+
+        // ── STAGE 8c: A/B Test Rollout (on release branches) ───
+        stage('A/B Test Rollout') {
+            when {
+                anyOf { branch 'release/*'; branch 'main' }
+                expression { return params.AB_TEST_ENABLED == 'true' }
+            }
+            steps {
+                sh """
+                    echo "=== Deploying Model B for A/B testing ==="
+                    # Apply A/B deployment (Model A=80%, Model B=20%)
+                    kubectl apply -f k8s/ab-testing/ab-deployment.yaml
+
+                    # Wait for both variants to be ready
+                    kubectl rollout status deployment/flask-model-a --timeout=120s
+                    kubectl rollout status deployment/flask-model-b --timeout=120s
+
+                    echo "A/B test deployed: Model A (80%) vs Model B (20%)"
+                    echo "Monitor: kubectl port-forward svc/flask-ab-service 8080:80"
+                    echo "Results analyzed every 30 min by ab-test-analyzer CronJob"
                 """
             }
         }
@@ -272,9 +421,29 @@ EOF
     post {
         success {
             echo "PIPELINE SUCCESS — ${env.GIT_BRANCH_NAME} | ${env.GIT_COMMIT_SHORT}"
+            slackSend(
+                channel: '#mlops-alerts',
+                color:   'good',
+                message: "✅ *Pipeline SUCCESS* — `${env.GIT_BRANCH_NAME}` | `${env.GIT_COMMIT_SHORT}`\n" +
+                         "Build: ${env.BUILD_URL}"
+            )
         }
         failure {
             echo "PIPELINE FAILED — ${env.GIT_BRANCH_NAME} | ${env.GIT_COMMIT_SHORT} — check logs"
+            slackSend(
+                channel: '#mlops-alerts',
+                color:   'danger',
+                message: "❌ *Pipeline FAILED* — `${env.GIT_BRANCH_NAME}` | `${env.GIT_COMMIT_SHORT}`\n" +
+                         "Stage: `${env.STAGE_NAME}` | Build: ${env.BUILD_URL}"
+            )
+        }
+        unstable {
+            slackSend(
+                channel: '#mlops-alerts',
+                color:   'warning',
+                message: "⚠️ *Pipeline UNSTABLE* (test failures) — `${env.GIT_BRANCH_NAME}`\n" +
+                         "Build: ${env.BUILD_URL}"
+            )
         }
         always {
             cleanWs()

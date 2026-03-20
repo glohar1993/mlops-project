@@ -1,0 +1,59 @@
+# ============================================================
+# ArgoCD Application — GitOps CD for MLOps production
+# Watches: github.com/glohar1993/mlops-project (main branch)
+# Syncs: k8s/ folder → default namespace in EKS
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: mlops-production
+  namespace: argocd
+  labels:
+    app: mlops
+    env: production
+  # Auto-delete child resources when app is deleted
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  # --- Source: your GitHub repo ---
+  source:
+    repoURL: https://github.com/glohar1993/mlops-project.git
+    targetRevision: main
+    path: k8s
+    # Only sync these specific files (exclude terraform, dags, etc.)
+    directory:
+      recurse: true
+      exclude: |
+        feature-store/**
+        argocd/**
+
+  # --- Destination: EKS default namespace ---
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+
+  # --- Sync Policy: auto-heal, self-heal ---
+  syncPolicy:
+    automated:
+      prune: true        # Remove k8s resources deleted from Git
+      selfHeal: true     # Auto-fix manual kubectl changes
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
+
+  # --- Health checks: only mark healthy when all pods are Ready ---
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas   # HPA controls replicas — ignore diff

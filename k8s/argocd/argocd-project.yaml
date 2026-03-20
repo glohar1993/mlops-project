@@ -1,0 +1,55 @@
+# ============================================================
+# ArgoCD AppProject — RBAC and resource allow-list
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: mlops
+  namespace: argocd
+spec:
+  description: MLOps Production Project
+
+  # Only allow deployments from this repo
+  sourceRepos:
+    - https://github.com/glohar1993/mlops-project.git
+
+  # Only allow deploying to our EKS cluster
+  destinations:
+    - namespace: default
+      server: https://kubernetes.default.svc
+    - namespace: staging
+      server: https://kubernetes.default.svc
+    - namespace: airflow
+      server: https://kubernetes.default.svc
+
+  # Resource allow-list
+  clusterResourceWhitelist:
+    - group: ''
+      kind: Namespace
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRole
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRoleBinding
+
+  namespaceResourceWhitelist:
+    - group: apps
+      kind: Deployment
+    - group: ''
+      kind: Service
+    - group: ''
+      kind: ConfigMap
+    - group: autoscaling
+      kind: HorizontalPodAutoscaler
+    - group: policy
+      kind: PodDisruptionBudget
+    - group: batch
+      kind: CronJob
+
+  # Roles for CI/CD pipeline (Jenkins)
+  roles:
+    - name: jenkins-deployer
+      description: Jenkins pipeline can sync and deploy
+      policies:
+        - p, proj:mlops:jenkins-deployer, applications, get, mlops/*, allow
+        - p, proj:mlops:jenkins-deployer, applications, sync, mlops/*, allow
+        - p, proj:mlops:jenkins-deployer, applications, override, mlops/*, allow

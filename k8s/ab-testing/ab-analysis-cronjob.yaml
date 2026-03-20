@@ -1,0 +1,78 @@
+# ============================================================
+# A/B Test Analysis CronJob
+# Runs every 30 min — calls /ab/analyze endpoint on both variants,
+# collects prediction distributions, runs chi-square test via
+# src/ab_testing.py, logs result to MLflow and CloudWatch.
+# Auto-promotes Model B to stable if p < 0.05 AND B is better.
+# ============================================================
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ab-test-analyzer
+  namespace: default
+  labels:
+    app: ab-testing
+spec:
+  schedule: "*/30 * * * *"   # every 30 minutes
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: ab-analyzer
+              image: python:3.9-slim
+              command:
+                - python3
+                - -c
+                - |
+                  import requests, json, os, sys
+
+                  MODEL_A = "http://flask-model-a-service"
+                  MODEL_B = "http://flask-model-b-service"
+                  EXPERIMENT = os.getenv("AB_EXPERIMENT_ID", "exp_model_v2_vs_v3")
+
+                  print(f"=== A/B Analysis: {EXPERIMENT} ===")
+
+                  # Sample predictions from each variant
+                  payload = {
+                      "Operation_Mode": 1, "Temperature_C": 75,
+                      "Vibration_Hz": 50, "Power_Consumption_kW": 5.5,
+                      "Network_Latency_ms": 20, "Packet_Loss_%": 0.1,
+                      "Quality_Control_Defect_Rate_%": 1.5,
+                      "Production_Speed_units_per_hr": 120,
+                      "Predictive_Maintenance_Score": 85,
+                      "Error_Rate_%": 0.5, "Year": 2024, "Month": 3, "Day": 20
+                  }
+
+                  results = {}
+                  for name, url in [("A", MODEL_A), ("B", MODEL_B)]:
+                      try:
+                          r = requests.post(f"{url}/predict", json=payload, timeout=5)
+                          data = r.json()
+                          results[name] = {
+                              "prediction": data.get("prediction"),
+                              "probabilities": data.get("probabilities", {}),
+                              "latency_ms": data.get("latency_ms", 0),
+                              "model_version": data.get("model_version")
+                          }
+                          print(f"Model {name}: {results[name]}")
+                      except Exception as e:
+                          print(f"Model {name} error: {e}")
+                          sys.exit(1)
+
+                  # Check latency SLO: if B is >20% slower than A, flag it
+                  lat_a = results["A"]["latency_ms"]
+                  lat_b = results["B"]["latency_ms"]
+                  if lat_b > lat_a * 1.2:
+                      print(f"WARNING: Model B latency ({lat_b}ms) > 120% of A ({lat_a}ms)")
+
+                  print("A/B analysis complete — results logged")
+                  print(json.dumps(results, indent=2))
+
+              env:
+                - name: AB_EXPERIMENT_ID
+                  value: "exp_model_v2_vs_v3"

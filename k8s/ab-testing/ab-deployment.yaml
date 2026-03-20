@@ -1,0 +1,182 @@
+# ============================================================
+# A/B Testing Deployment
+# Model A = current stable (version 2)
+# Model B = challenger (version 3 candidate)
+# Traffic split: 80% Model A / 20% Model B via weighted Service
+# Results tracked in src/ab_testing.py (chi-square significance)
+# ============================================================
+
+# --- Model A: Stable (version 2) ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flask-model-a
+  namespace: default
+  labels:
+    app: flask-app
+    variant: model-a
+    version: "2"
+spec:
+  replicas: 4          # 80% of traffic (4 pods)
+  selector:
+    matchLabels:
+      app: flask-app
+      variant: model-a
+  template:
+    metadata:
+      labels:
+        app: flask-app
+        variant: model-a
+        version: "2"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "5000"
+    spec:
+      containers:
+        - name: flask-container
+          image: 824033490704.dkr.ecr.us-east-2.amazonaws.com/mlops-flask-app:latest
+          ports:
+            - containerPort: 5000
+          env:
+            - name: MODEL_VARIANT
+              value: "A"
+            - name: MODEL_VERSION
+              value: "2"
+            - name: AB_EXPERIMENT_ID
+              value: "exp_model_v2_vs_v3"
+            - name: MLFLOW_TRACKING_URI
+              valueFrom:
+                secretKeyRef:
+                  name: mlops-secrets
+                  key: MLFLOW_TRACKING_URI
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "500m"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 30
+            periodSeconds: 15
+
+---
+# --- Model B: Challenger (version 3 candidate) ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flask-model-b
+  namespace: default
+  labels:
+    app: flask-app
+    variant: model-b
+    version: "3"
+spec:
+  replicas: 1          # 20% of traffic (1 pod)
+  selector:
+    matchLabels:
+      app: flask-app
+      variant: model-b
+  template:
+    metadata:
+      labels:
+        app: flask-app
+        variant: model-b
+        version: "3"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "5000"
+    spec:
+      containers:
+        - name: flask-container
+          image: 824033490704.dkr.ecr.us-east-2.amazonaws.com/mlops-flask-app:latest
+          ports:
+            - containerPort: 5000
+          env:
+            - name: MODEL_VARIANT
+              value: "B"
+            - name: MODEL_VERSION
+              value: "3"
+            - name: AB_EXPERIMENT_ID
+              value: "exp_model_v2_vs_v3"
+            - name: MLFLOW_TRACKING_URI
+              valueFrom:
+                secretKeyRef:
+                  name: mlops-secrets
+                  key: MLFLOW_TRACKING_URI
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "500m"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+
+---
+# --- Weighted Service: 80/20 split via pod count ---
+# Kubernetes routes to pods randomly — 4 Model-A + 1 Model-B = 80/20
+apiVersion: v1
+kind: Service
+metadata:
+  name: flask-ab-service
+  namespace: default
+  labels:
+    app: flask-app
+    type: ab-testing
+  annotations:
+    # Label used by Prometheus to identify this service
+    prometheus.io/scrape: "true"
+spec:
+  type: LoadBalancer
+  selector:
+    app: flask-app        # matches BOTH model-a and model-b pods
+  ports:
+    - name: http
+      port: 80
+      targetPort: 5000
+
+---
+# --- Per-variant ClusterIP services (for monitoring each variant) ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flask-model-a-service
+  namespace: default
+spec:
+  type: ClusterIP
+  selector:
+    app: flask-app
+    variant: model-a
+  ports:
+    - port: 80
+      targetPort: 5000
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flask-model-b-service
+  namespace: default
+spec:
+  type: ClusterIP
+  selector:
+    app: flask-app
+    variant: model-b
+  ports:
+    - port: 80
+      targetPort: 5000
