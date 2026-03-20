@@ -206,6 +206,15 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
                 sh """
                     kubectl create namespace staging --dry-run=client -o yaml | kubectl apply -f -
 
+                    # Create mlops-secrets in staging (deployment.yaml references these)
+                    kubectl create secret generic mlops-secrets \
+                        --from-literal=MLFLOW_TRACKING_URI=${MLFLOW_URL} \
+                        --from-literal=MLFLOW_MODEL_NAME=mlops-efficiency-predictor \
+                        --from-literal=AWS_DEFAULT_REGION=${AWS_REGION} \
+                        --from-literal=S3_ARTIFACTS_BUCKET=mlops-artifacts-prod-824033490704 \
+                        --from-literal=ENVIRONMENT=staging \
+                        -n staging --dry-run=client -o yaml | kubectl apply -f -
+
                     # Strip hardcoded 'namespace: default' from manifests before applying to staging
                     sed 's/namespace: default/namespace: staging/g' k8s/deployment.yaml | kubectl apply -f - -n staging
                     sed 's/namespace: default/namespace: staging/g' k8s/service.yaml    | kubectl apply -f - -n staging
