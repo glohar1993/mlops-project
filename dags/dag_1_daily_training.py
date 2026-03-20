@@ -27,6 +27,7 @@ from airflow.operators.dummy import DummyOperator
 from airflow.utils.trigger_rule import TriggerRule
 
 import os
+import sys
 import pandas as pd
 import mlflow
 import mlflow.sklearn
@@ -35,11 +36,18 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, f1_score
 
+# Single source of truth for all feature/label definitions
+sys.path.insert(0, "/opt/airflow/dags")
+from feature_registry import (
+    FEATURE_COLUMNS, TARGET_COLUMN, LABEL_MAP,
+    apply_label_map, encode_operation_mode, MIN_ACCURACY
+)
+
 # ── Config ────────────────────────────────────────────────────
 MLFLOW_URI        = os.getenv("MLFLOW_TRACKING_URI", "http://3.15.231.90:5000")
 DATA_PATH         = os.getenv("DATA_PATH", "/opt/airflow/data/data.csv")
-MODEL_ACCURACY_THRESHOLD = 0.75
-ECR_IMAGE         = "824033490704.dkr.ecr.us-east-2.amazonaws.com/mlops-flask-app:latest"
+MODEL_ACCURACY_THRESHOLD = MIN_ACCURACY   # from feature_registry — single source of truth
+ECR_IMAGE         = os.getenv("ECR_IMAGE", "824033490704.dkr.ecr.us-east-2.amazonaws.com/mlops-flask-app:latest")
 EKS_NAMESPACE     = "default"
 
 # ── Default task args ─────────────────────────────────────────
@@ -112,16 +120,10 @@ def preprocess_data(**context):
     data_path = context["ti"].xcom_pull(task_ids="validate_data", key="data_path")
     df = pd.read_csv(data_path)
 
-    feature_cols = [
-        "Operation_Mode", "Temperature_C", "Vibration_Hz",
-        "Power_Consumption_kW", "Network_Latency_ms", "Packet_Loss_%",
-        "Quality_Control_Defect_Rate_%", "Production_Speed_units_per_hr",
-        "Predictive_Maintenance_Score", "Error_Rate_%",
-        "Year", "Month", "Day", "Hour"
-    ]
+    feature_cols = FEATURE_COLUMNS   # from feature_registry
 
     X = df[feature_cols].fillna(df[feature_cols].median())
-    y = df["Efficiency_Category"].map({"High": 0, "Low": 1, "Medium": 2})
+    y = apply_label_map(df[TARGET_COLUMN])
 
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
@@ -279,9 +281,31 @@ t_deploy = BashOperator(
     task_id="deploy_to_eks",
     bash_command="""
         aws eks update-kubeconfig --region us-east-2 --name mlops-cluster
+
+        # Rolling restart — picks up new ECR image (zero-downtime with maxUnavailable=0)
         kubectl rollout restart deployment/flask-deployment -n default
         kubectl rollout status deployment/flask-deployment -n default --timeout=300s
-        echo "Deployment complete"
+
+        # Wait for pods to pass readiness probe
+        kubectl wait pod -l app=flask-app -n default \
+            --for=condition=Ready --timeout=120s
+
+        # Signal Flask to hot-swap model from MLflow Production registry
+        # This increments ml_retraining_total and updates ml_model_accuracy in Grafana
+        FLASK_INTERNAL="http://flask-service.default.svc.cluster.local"
+        kubectl run retrain-signal-$(date +%s) \
+            --image=curlimages/curl:8.7.1 \
+            --restart=Never \
+            --rm \
+            --attach \
+            --namespace=default \
+            -- curl -sf -X POST "${FLASK_INTERNAL}/retrain" \
+               -H "Content-Type: application/json" \
+               --max-time 120 \
+            && echo "Model hot-swap triggered — ml_retraining_total incremented" \
+            || echo "Warning: /retrain call failed — model loads from MLflow on next startup"
+
+        echo "DAG 1 deploy complete"
     """,
     dag=dag,
 )

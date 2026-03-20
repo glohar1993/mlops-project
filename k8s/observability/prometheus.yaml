@@ -9,6 +9,10 @@ data:
       scrape_interval: 10s
       evaluation_interval: 10s
 
+    # Load alert rules AND SLO recording rules from ConfigMaps mounted at /etc/prometheus/rules/
+    rule_files:
+      - /etc/prometheus/rules/*.yml
+
     scrape_configs:
       # Scrape Prometheus itself
       - job_name: 'prometheus'
@@ -20,6 +24,80 @@ data:
         static_configs:
           - targets: ['flask-service:5001']
         metrics_path: '/metrics'
+
+---
+# SLO Recording Rules
+# These pre-compute SLO compliance metrics so Grafana dashboards and
+# alerts can query slo:* metrics without expensive range queries.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-slo-rules
+data:
+  slo_rules.yml: |
+    groups:
+      - name: mlops.slo.rules
+        interval: 30s
+        rules:
+
+          # ── Latency SLO: p95 prediction latency < 500ms ──────────
+          - record: slo:prediction_latency_p95_ms
+            expr: >
+              histogram_quantile(0.95,
+                rate(ml_prediction_duration_seconds_bucket[5m])
+              ) * 1000
+
+          - record: slo:prediction_latency_p99_ms
+            expr: >
+              histogram_quantile(0.99,
+                rate(ml_prediction_duration_seconds_bucket[5m])
+              ) * 1000
+
+          # SLO compliance: 1 = within SLO, 0 = breached (p95 > 500ms)
+          - record: slo:latency_compliance
+            expr: >
+              (
+                histogram_quantile(0.95,
+                  rate(ml_prediction_duration_seconds_bucket[5m])
+                ) * 1000 < 500
+              ) or vector(0)
+
+          # ── Error Rate SLO: < 1% of predictions are errors ───────
+          - record: slo:prediction_error_rate_pct
+            expr: >
+              rate(ml_prediction_errors_total[5m])
+              /
+              (rate(ml_predictions_total[5m]) + rate(ml_prediction_errors_total[5m]) + 0.0001)
+              * 100
+
+          # SLO compliance: 1 = within SLO, 0 = breached (error_rate > 1%)
+          - record: slo:error_rate_compliance
+            expr: >
+              (
+                rate(ml_prediction_errors_total[5m])
+                /
+                (rate(ml_predictions_total[5m]) + rate(ml_prediction_errors_total[5m]) + 0.0001)
+                * 100 < 1.0
+              ) or vector(0)
+
+          # ── Throughput SLO: > 10 req/s at full load ──────────────
+          - record: slo:prediction_throughput_rps
+            expr: rate(ml_predictions_total[1m])
+
+          # ── Overall SLO burn rate (multi-window) ─────────────────
+          # Fast burn: 5-min window (catches sudden spikes)
+          - record: slo:error_burn_rate_fast
+            expr: >
+              rate(ml_prediction_errors_total[5m])
+              /
+              (rate(ml_predictions_total[5m]) + 0.0001)
+
+          # Slow burn: 1-hour window (catches gradual degradation)
+          - record: slo:error_burn_rate_slow
+            expr: >
+              rate(ml_prediction_errors_total[1h])
+              /
+              (rate(ml_predictions_total[1h]) + 0.0001)
 
 ---
 apiVersion: apps/v1
@@ -47,10 +125,20 @@ spec:
           volumeMounts:
             - name: config-volume
               mountPath: /etc/prometheus
+            - name: rules-volume
+              mountPath: /etc/prometheus/rules
       volumes:
         - name: config-volume
           configMap:
             name: prometheus-config
+        # Projected volume merges alert rules + SLO rules into one /rules/ directory
+        - name: rules-volume
+          projected:
+            sources:
+              - configMap:
+                  name: prometheus-alert-rules
+              - configMap:
+                  name: prometheus-slo-rules
 
 ---
 apiVersion: v1

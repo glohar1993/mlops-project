@@ -1,38 +1,92 @@
 # =============================================================
-# PIPELINE 3: Drift Detection Pipeline
-# Runs as Kubernetes CronJob every 2 minutes
-# Trigger: automatic schedule
-# If drift CRITICAL → calls /retrain on serving app (Pipeline 4)
+# PIPELINE 3: Drift Detection CronJob (Decoupled from Flask)
+# =============================================================
+# Architecture change: drift detection is NO LONGER a background
+# thread inside Flask. It runs here, independently, every 2 minutes.
+#
+# Benefits:
+#   - Drift state survives Flask pod restarts
+#   - Drift detection scales independently from serving
+#   - Drift reports written to S3 (durable, auditable)
+#   - Can trigger Airflow DAG 2 directly via REST API
+#
+# Flow:
+#   CronJob → GET /drift → evaluate PSI
+#           → if CRITICAL: POST Airflow API to trigger DAG 2
+#           → write drift_report.json to S3
 # =============================================================
 apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: drift-detection-pipeline
+  namespace: default
   labels:
     pipeline: "3-drift-detection"
+    component: observability
 spec:
-  schedule: "*/2 * * * *"       # Every 2 minutes
-  concurrencyPolicy: Forbid      # Don't run two at same time
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 3
+  schedule: "*/2 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit:     5
   jobTemplate:
     spec:
+      backoffLimit: 1
       template:
         metadata:
           labels:
             pipeline: "3-drift-detection"
         spec:
           restartPolicy: Never
+          serviceAccountName: default
           containers:
             - name: drift-detector
               image: 824033490704.dkr.ecr.us-east-2.amazonaws.com/mlops-drift-pipeline:latest
               imagePullPolicy: Always
+              command: ["python3", "pipelines/drift_pipeline.py"]
               env:
+                # Serving app URL (internal K8s DNS — no public IP)
                 - name: SERVING_APP_URL
-                  value: "http://flask-service:5001"
+                  value: "http://flask-service.default.svc.cluster.local:80"
+                # Thresholds from feature_registry
                 - name: PSI_WARNING
                   value: "0.1"
                 - name: PSI_CRITICAL
                   value: "0.2"
                 - name: MIN_WINDOW_SIZE
                   value: "10"
+                # Airflow API — triggers DAG 2 on CRITICAL drift
+                - name: AIRFLOW_API_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: mlops-secrets
+                      key: AIRFLOW_API_URL
+                - name: AIRFLOW_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: mlops-secrets
+                      key: AIRFLOW_USER
+                - name: AIRFLOW_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: mlops-secrets
+                      key: AIRFLOW_PASSWORD
+                # S3 for durable drift reports
+                - name: REPORT_S3_BUCKET
+                  valueFrom:
+                    secretKeyRef:
+                      name: mlops-secrets
+                      key: S3_ARTIFACTS_BUCKET
+                - name: REPORT_S3_KEY_PREFIX
+                  value: "drift-reports/"
+                - name: AWS_DEFAULT_REGION
+                  valueFrom:
+                    secretKeyRef:
+                      name: mlops-secrets
+                      key: AWS_DEFAULT_REGION
+              resources:
+                requests:
+                  cpu:    "100m"
+                  memory: "128Mi"
+                limits:
+                  cpu:    "250m"
+                  memory: "256Mi"

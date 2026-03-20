@@ -22,6 +22,7 @@ Why this matters:
 
 from datetime import datetime, timedelta
 import os
+import sys
 import json
 import requests
 import pandas as pd
@@ -32,6 +33,14 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 
+# Single source of truth for all feature/label definitions
+sys.path.insert(0, "/opt/airflow/dags")
+from feature_registry import (
+    FEATURE_COLUMNS, TARGET_COLUMN, LABEL_MAP,
+    apply_label_map, encode_operation_mode,
+    PSI_CRITICAL, MIN_ACCURACY_GAIN
+)
+
 from airflow import DAG
 from airflow.operators.python import PythonOperator, BranchPythonOperator
 from airflow.operators.bash import BashOperator
@@ -39,12 +48,12 @@ from airflow.operators.dummy import DummyOperator
 from airflow.utils.trigger_rule import TriggerRule
 
 # ── Config ────────────────────────────────────────────────────
-FLASK_URL    = os.getenv("FLASK_URL",    "http://a261d35cf8f8a4acebebb622c72750e1-1488940013.us-east-2.elb.amazonaws.com")
+FLASK_URL    = os.getenv("FLASK_URL",    "http://flask-service.default.svc.cluster.local")
 MLFLOW_URI   = os.getenv("MLFLOW_TRACKING_URI", "http://3.15.231.90:5000")
 DATA_PATH    = os.getenv("DATA_PATH", "/opt/airflow/data/data.csv")
-S3_BUCKET    = "mlops-artifacts-prod-824033490704"
-DRIFT_THRESHOLD  = 0.2       # PSI threshold for CRITICAL
-ACCURACY_MIN_GAIN = 0.02     # New model must be at least 2% better
+S3_BUCKET    = os.getenv("S3_BUCKET", "mlops-artifacts-prod-824033490704")
+DRIFT_THRESHOLD   = PSI_CRITICAL       # from feature_registry
+ACCURACY_MIN_GAIN = MIN_ACCURACY_GAIN  # from feature_registry
 
 default_args = {
     "owner":            "mlops-team",
@@ -75,27 +84,33 @@ dag = DAG(
 
 # ── Task 1: Confirm Drift is CRITICAL ────────────────────────
 def check_drift_severity(**context):
-    """Re-check drift from Flask app. Avoid false-alarm retraining."""
+    """Use conf params from trigger — live endpoint may have already auto-cleared
+    because the Flask background thread retrains every 30s and resets the score.
+    The DAG is triggered by the drift detector *at the moment* drift is CRITICAL,
+    so the conf params are the authoritative record of the drift state."""
+    conf   = context["dag_run"].conf or {}
+    score  = float(conf.get("drift_score",  conf.get("driftScore",  0.0)))
+    status = str(conf.get("drift_status",   conf.get("driftStatus", "OK")))
+
+    print(f"Drift from trigger conf: score={score}, status={status}")
+
+    # Also log live state for visibility (informational only — does NOT gate the decision)
     try:
-        resp = requests.get(f"{FLASK_URL}/drift", timeout=10)
-        drift_data = resp.json()
+        resp      = requests.get(f"{FLASK_URL}/drift", timeout=10)
+        live_data = resp.json()
+        print(f"Live drift (FYI): score={live_data.get('overall_score', 0):.4f}, "
+              f"status={live_data.get('status', '?')}")
     except Exception as e:
-        raise ValueError(f"Cannot reach Flask app at {FLASK_URL}/drift: {e}")
-
-    score  = drift_data.get("overall_score", 0.0)
-    status = drift_data.get("status", "OK")
-
-    print(f"Drift check: score={score:.4f}, status={status}")
+        print(f"Warning: cannot reach Flask live /drift endpoint: {e}")
 
     if status != "CRITICAL" or score < DRIFT_THRESHOLD:
         raise ValueError(
-            f"Drift no longer CRITICAL (score={score:.4f}, status={status}). "
-            f"Aborting retraining — no action needed."
+            f"Drift was not CRITICAL at trigger time "
+            f"(conf score={score}, status={status}). Aborting."
         )
 
     context["ti"].xcom_push(key="drift_score", value=score)
-    context["ti"].xcom_push(key="drift_data",  value=drift_data)
-    print(f"CONFIRMED CRITICAL drift (PSI={score:.4f}) — proceeding with retraining")
+    print(f"CONFIRMED CRITICAL drift from conf (score={score}) — proceeding with retraining")
 
 
 # ── Task 2: Backup Current Model ─────────────────────────────
@@ -135,16 +150,20 @@ def retrain_model(**context):
 
     df = pd.read_csv(DATA_PATH)
 
-    feature_cols = [
-        "Operation_Mode", "Temperature_C", "Vibration_Hz",
-        "Power_Consumption_kW", "Network_Latency_ms", "Packet_Loss_%",
-        "Quality_Control_Defect_Rate_%", "Production_Speed_units_per_hr",
-        "Predictive_Maintenance_Score", "Error_Rate_%",
-        "Year", "Month", "Day", "Hour"
-    ]
+    # Extract datetime features from Timestamp (same as data_processing.py)
+    df["Timestamp"] = pd.to_datetime(df["Timestamp"], errors="coerce")
+    df["Year"]  = df["Timestamp"].dt.year
+    df["Month"] = df["Timestamp"].dt.month
+    df["Day"]   = df["Timestamp"].dt.day
+    df["Hour"]  = df["Timestamp"].dt.hour
+
+    # Fixed encoding from feature_registry (deterministic — no LabelEncoder.fit)
+    df["Operation_Mode"] = df["Operation_Mode"].apply(encode_operation_mode)
+
+    feature_cols = FEATURE_COLUMNS   # from feature_registry
 
     X = df[feature_cols].fillna(df[feature_cols].median())
-    y = df["Efficiency_Category"].map({"High": 0, "Low": 1, "Medium": 2})
+    y = apply_label_map(df[TARGET_COLUMN])
 
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
@@ -292,8 +311,33 @@ t_deploy = BashOperator(
     task_id="deploy_to_eks",
     bash_command="""
         aws eks update-kubeconfig --region us-east-2 --name mlops-cluster
+
+        # Rolling restart — zero-downtime with maxUnavailable=0 strategy
         kubectl rollout restart deployment/flask-deployment -n default
         kubectl rollout status deployment/flask-deployment -n default --timeout=300s
+
+        # Wait for readiness probe to pass
+        kubectl wait pod -l app=flask-app -n default \
+            --for=condition=Ready --timeout=120s
+
+        # Hot-swap model from MLflow Production registry into running Flask pods
+        # This closes the model handoff loop:
+        #   MLflow registry updated → /retrain called → model hot-swapped in memory
+        #   → ml_retraining_total incremented → ml_model_accuracy updated
+        #   → Grafana shows the change in real time
+        FLASK_INTERNAL="http://flask-service.default.svc.cluster.local"
+        kubectl run retrain-signal-$(date +%s) \
+            --image=curlimages/curl:8.7.1 \
+            --restart=Never \
+            --rm \
+            --attach \
+            --namespace=default \
+            -- curl -sf -X POST "${FLASK_INTERNAL}/retrain" \
+               -H "Content-Type: application/json" \
+               --max-time 120 \
+            && echo "Model hot-swap complete — Grafana metrics updated" \
+            || echo "Warning: /retrain call failed — model loads from MLflow on next startup"
+
         echo "Drift-triggered redeployment complete"
     """,
     dag=dag,

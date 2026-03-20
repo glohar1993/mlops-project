@@ -2,10 +2,14 @@ import pandas as pd
 import numpy as np
 import joblib
 import os
-from sklearn.preprocessing import LabelEncoder,StandardScaler
+from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from src.logger import get_logger
 from src.custom_exception import CustomException
+from src.feature_registry import (
+    FEATURE_COLUMNS, TARGET_COLUMN, LABEL_MAP,
+    apply_label_map, encode_operation_mode, REQUIRED_RAW_COLUMNS
+)
 
 logger = get_logger(__name__)
 
@@ -29,41 +33,31 @@ class DataProcessing:
         
     def preprocess(self):
         try:
-            self.df["Timestamp"] = pd.to_datetime(self.df["Timestamp"] , errors='coerce')
-            categorical_cols = ['Operation_Mode','Efficiency_Status']
-            for col in categorical_cols:
-                self.df[col] = self.df[col].astype('category')
-
-            self.df["Year"] = self.df["Timestamp"].dt.year
+            self.df["Timestamp"] = pd.to_datetime(self.df["Timestamp"], errors="coerce")
+            self.df["Year"]  = self.df["Timestamp"].dt.year
             self.df["Month"] = self.df["Timestamp"].dt.month
-            self.df["Day"] = self.df["Timestamp"].dt.day
+            self.df["Day"]   = self.df["Timestamp"].dt.day
+            self.df["Hour"]  = self.df["Timestamp"].dt.hour
 
-            self.df["Hour"] = self.df["Timestamp"].dt.hour
+            drop_cols = [c for c in ["Timestamp", "Machine_ID"] if c in self.df.columns]
+            self.df.drop(columns=drop_cols, inplace=True)
 
-            self.df.drop(columns=["Timestamp","Machine_ID"] , inplace=True)
-
-            columns_to_encode = ["Efficiency_Status","Operation_Mode"]
-            for col in columns_to_encode:
-                le = LabelEncoder()
-                self.df[col] = le.fit_transform(self.df[col])
+            # Fixed encoding from feature_registry — deterministic across all contexts
+            self.df["Operation_Mode"] = self.df["Operation_Mode"].apply(encode_operation_mode)
+            self.df[TARGET_COLUMN]    = apply_label_map(self.df[TARGET_COLUMN])
 
             logger.info("All basic data preprocessing done..")
-        
+
         except Exception as e:
             logger.error(f"Error while preprocessing data {e}")
-            raise CustomException("Failed to preprocess data",e)
+            raise CustomException("Failed to preprocess data", e)
         
     def split_and_scale_and_save(self):
         try:
-            self.features = [
-                'Operation_Mode', 'Temperature_C', 'Vibration_Hz',
-                'Power_Consumption_kW', 'Network_Latency_ms', 'Packet_Loss_%',
-                'Quality_Control_Defect_Rate_%', 'Production_Speed_units_per_hr',
-                'Predictive_Maintenance_Score', 'Error_Rate_%','Year', 'Month', 'Day', 'Hour'
-            ]
+            self.features = FEATURE_COLUMNS   # imported from feature_registry
 
             X = self.df[self.features]
-            y = self.df["Efficiency_Status"]
+            y = self.df[TARGET_COLUMN]
 
             scaler = StandardScaler()
             X_scaled = scaler.fit_transform(X)

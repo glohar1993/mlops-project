@@ -6,9 +6,12 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: alertmanager-config
+  name: alertmanager-config-template
 data:
-  alertmanager.yml: |
+  # Template file — ${SLACK_WEBHOOK_URL} is substituted at pod startup
+  # by the init container using envsubst. The rendered file is written
+  # to an emptyDir volume that the main container reads.
+  alertmanager.yml.tmpl: |
     global:
       resolve_timeout: 5m
 
@@ -17,21 +20,28 @@ data:
       group_wait: 10s
       group_interval: 5m
       repeat_interval: 1h
-      receiver: 'webhook-logger'
+      receiver: 'slack-alerts'
       routes:
         - match:
             severity: critical
-          receiver: 'webhook-logger'
-          continue: true
+          receiver: 'slack-alerts'
         - match:
             severity: warning
-          receiver: 'webhook-logger'
+          receiver: 'slack-alerts'
 
     receivers:
-      - name: 'webhook-logger'
-        webhook_configs:
-          - url: 'http://localhost:5001'
+      - name: 'slack-alerts'
+        slack_configs:
+          - api_url: '${SLACK_WEBHOOK_URL}'
+            channel: '#mlops-alerts'
             send_resolved: true
+            title: '{{ if eq .Status "firing" }}🚨{{ else }}✅{{ end }} {{ .CommonLabels.alertname }}'
+            text: >-
+              {{ range .Alerts }}
+                *Alert:* {{ .Annotations.summary }}
+                *Details:* {{ .Annotations.description }}
+                *Severity:* {{ .Labels.severity }}
+              {{ end }}
 
 ---
 apiVersion: v1
@@ -140,6 +150,26 @@ spec:
       labels:
         app: alertmanager
     spec:
+      # Init container renders the config template by substituting
+      # ${SLACK_WEBHOOK_URL} from the mlops-secrets Secret.
+      initContainers:
+        - name: config-gen
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - sed "s|\${SLACK_WEBHOOK_URL}|$SLACK_WEBHOOK_URL|g" /tmpl/alertmanager.yml.tmpl > /etc/alertmanager/alertmanager.yml
+          env:
+            - name: SLACK_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: mlops-secrets
+                  key: SLACK_WEBHOOK_URL
+          volumeMounts:
+            - name: config-template
+              mountPath: /tmpl
+            - name: config-rendered
+              mountPath: /etc/alertmanager
       containers:
         - name: alertmanager
           image: prom/alertmanager:latest
@@ -148,12 +178,14 @@ spec:
           ports:
             - containerPort: 9093
           volumeMounts:
-            - name: config
+            - name: config-rendered
               mountPath: /etc/alertmanager
       volumes:
-        - name: config
+        - name: config-template
           configMap:
-            name: alertmanager-config
+            name: alertmanager-config-template
+        - name: config-rendered
+          emptyDir: {}
 
 ---
 apiVersion: v1

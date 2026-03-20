@@ -19,14 +19,25 @@ import requests
 import json
 import time
 import os
+import boto3
 from datetime import datetime
 
 # Config — uses Kubernetes service DNS internally
-SERVING_APP_URL   = os.getenv("SERVING_APP_URL",   "http://flask-service:5001")
+SERVING_APP_URL   = os.getenv("SERVING_APP_URL",   "http://flask-service.default.svc.cluster.local:80")
 PSI_WARNING       = float(os.getenv("PSI_WARNING",  "0.1"))
 PSI_CRITICAL      = float(os.getenv("PSI_CRITICAL", "0.2"))
 MIN_WINDOW_SIZE   = int(os.getenv("MIN_WINDOW_SIZE", "10"))
 REPORT_PATH       = os.getenv("REPORT_PATH", "/tmp/drift_report.json")
+
+# Airflow REST API — triggers DAG 2 instead of calling /retrain directly
+# This gives full DAG orchestration: backup → retrain → compare → promote/rollback
+AIRFLOW_API_URL   = os.getenv("AIRFLOW_API_URL",  "")
+AIRFLOW_USER      = os.getenv("AIRFLOW_USER",     "admin")
+AIRFLOW_PASSWORD  = os.getenv("AIRFLOW_PASSWORD", "")
+
+# S3 for durable drift reports (survives pod restarts)
+REPORT_S3_BUCKET  = os.getenv("REPORT_S3_BUCKET", "")
+REPORT_S3_PREFIX  = os.getenv("REPORT_S3_KEY_PREFIX", "drift-reports/")
 
 
 def log(msg):
@@ -48,17 +59,64 @@ def get_drift_status() -> dict:
     return r.json()
 
 
-def trigger_retraining() -> dict:
-    log("Triggering retraining pipeline via /retrain endpoint...")
+def trigger_airflow_dag(drift_score: float, drift_status: str) -> dict:
+    """
+    Trigger Airflow DAG 2 via REST API.
+    This is the production pattern: CronJob → Airflow DAG (with full orchestration).
+    Previously called /retrain directly, which bypassed the backup/compare/promote logic.
+    """
+    if not AIRFLOW_API_URL:
+        log("AIRFLOW_API_URL not set — falling back to direct /retrain call")
+        return trigger_direct_retrain()
+
+    dag_run_url = f"{AIRFLOW_API_URL}/api/v1/dags/mlops_drift_retraining/dagRuns"
+    payload = {
+        "conf": {
+            "drift_score":  drift_score,
+            "drift_status": drift_status,
+            "triggered_by": "drift-detection-cronjob",
+        }
+    }
+    log(f"Triggering Airflow DAG 2 via {dag_run_url}")
+    r = requests.post(
+        dag_run_url,
+        json=payload,
+        auth=(AIRFLOW_USER, AIRFLOW_PASSWORD),
+        timeout=15,
+    )
+    r.raise_for_status()
+    result = r.json()
+    log(f"  DAG run triggered: {result.get('dag_run_id')} state={result.get('state')}")
+    return {"dag_triggered": True, "dag_run_id": result.get("dag_run_id")}
+
+
+def trigger_direct_retrain() -> dict:
+    """Fallback: call Flask /retrain directly (used if Airflow is unavailable)."""
+    log("Fallback: calling /retrain directly on serving pod...")
     r = requests.post(f"{SERVING_APP_URL}/retrain", timeout=120)
     r.raise_for_status()
     return r.json()
 
 
 def save_report(report: dict):
+    """Write drift report locally and upload to S3 for durability."""
     with open(REPORT_PATH, "w") as f:
         json.dump(report, f, indent=2)
-    log(f"Report saved to {REPORT_PATH}")
+    log(f"Report saved locally to {REPORT_PATH}")
+
+    if REPORT_S3_BUCKET:
+        try:
+            s3_key = f"{REPORT_S3_PREFIX}{datetime.utcnow().strftime('%Y/%m/%d/%H%M%S')}_drift_report.json"
+            s3 = boto3.client("s3")
+            s3.put_object(
+                Bucket=REPORT_S3_BUCKET,
+                Key=s3_key,
+                Body=json.dumps(report, indent=2),
+                ContentType="application/json",
+            )
+            log(f"Report uploaded to s3://{REPORT_S3_BUCKET}/{s3_key}")
+        except Exception as e:
+            log(f"Warning: S3 upload failed: {e} — local report still saved")
 
 
 def run():
@@ -121,20 +179,26 @@ def run():
 
     else:
         log(f"  🚨 CRITICAL DRIFT — PSI {overall_psi:.4f} >= {PSI_CRITICAL}!")
-        log("Step 4: Triggering RETRAINING PIPELINE automatically...")
+        log("Step 4: Triggering Airflow DAG 2 (full retrain + promote/rollback pipeline)...")
         report["status"] = "critical"
 
-        retrain_result = trigger_retraining()
-        report["retrain_result"] = retrain_result
+        # Airflow DAG provides: backup → retrain → compare → promote/rollback
+        # This is more robust than calling /retrain directly
+        trigger_result = trigger_airflow_dag(
+            drift_score=overall_psi,
+            drift_status="CRITICAL"
+        )
+        report["trigger_result"] = trigger_result
 
-        if retrain_result.get("model_replaced"):
-            log(f"  ✅ Model retrained and DEPLOYED!")
-            log(f"     Old Accuracy: {retrain_result['old_accuracy']:.2%}")
-            log(f"     New Accuracy: {retrain_result['new_accuracy']:.2%}")
+        if trigger_result.get("dag_triggered"):
+            log(f"  ✅ Airflow DAG 2 triggered: {trigger_result.get('dag_run_id')}")
+            report["action"] = "airflow-dag-triggered"
+        elif trigger_result.get("model_replaced"):
+            log(f"  ✅ Direct retrain deployed (Airflow fallback)")
             report["action"] = "retrained-and-deployed"
         else:
-            log(f"  ↩️  Retraining rolled back: {retrain_result.get('reason')}")
-            report["action"] = "retrained-rolled-back"
+            log(f"  ↩️  Retrain rolled back or failed")
+            report["action"] = "retrain-failed"
 
     # Step 4: Save report
     save_report(report)

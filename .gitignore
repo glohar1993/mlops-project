@@ -1,12 +1,43 @@
 venv/
 MLOPS_PROJECT_9.egg-info/
-logs/terraform/jenkins-key.pem
+
+# ── Terraform ────────────────────────────────────────────────
 terraform/*.pem
+terraform/jenkins-key.pem
 terraform/terraform.tfstate
 terraform/terraform.tfstate.backup
 terraform/.terraform/
-terraform/.terraform/providers/
-venv/
+terraform/.terraform.lock.hcl
+
+# ── Secrets (NEVER commit) ───────────────────────────────────
+*.pem
+*.key
+*.p12
+*.pfx
+.env
+.env.*
+secrets.yaml
+k8s/secrets.yaml
+
+# ── ML artifacts (tracked by DVC, not Git) ──────────────────
+artifacts/raw/*.csv
+artifacts/processed/*.pkl
+artifacts/models/*.pkl
+artifacts/models/backups/
+artifacts/drift/
+
+# ── Python ───────────────────────────────────────────────────
 mlruns/
 __pycache__/
 *.pyc
+*.pyo
+.pytest_cache/
+.coverage
+coverage.xml
+test-results.xml
+htmlcov/
+
+# ── IDE ──────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp

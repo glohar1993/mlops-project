@@ -20,13 +20,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir setuptools && \
     pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir gunicorn
+    pip install --no-cache-dir gunicorn && \
+    pip install --no-cache-dir "shap" "numpy>=2"
 
 # Copy application code
 COPY . /app
 
-# Install project as package
-RUN pip install --no-cache-dir -e .
+# Install project as package (--no-deps avoids numpy downgrade from setup.py)
+RUN pip install --no-cache-dir --no-deps -e .
 
 # Set ownership
 RUN chown -R mlops:mlops /app

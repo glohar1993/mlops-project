@@ -27,7 +27,10 @@ try:
     import mlflow.sklearn
     MLFLOW_AVAILABLE = True
     mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "file:./mlruns"))
-    mlflow.set_experiment("mlops-efficiency-prediction")
+    try:
+        mlflow.set_experiment("mlops-efficiency-prediction")
+    except Exception as exp_err:
+        logger.warning(f"MLflow experiment setup failed (continuing): {exp_err}")
 except ImportError:
     MLFLOW_AVAILABLE = False
     logger.info("MLflow not installed — skipping experiment tracking")
@@ -100,11 +103,12 @@ class ModelTraining:
             mlflow.set_tags({
                 "run_reason":    self.run_reason,
                 "model_type":    "LogisticRegression",
-                "data_version":  "v1",
+                "data_version":  self._get_dvc_hash(),
                 "environment":   os.getenv("ENVIRONMENT", "local"),
+                "git_commit":    os.getenv("GIT_COMMIT", "unknown"),
             })
 
-            # Train
+            # Train (saves model.pkl locally first — S3 upload is separate below)
             params = self.train_model()
             mlflow.log_params(params)
 
@@ -112,12 +116,18 @@ class ModelTraining:
             metrics = self.evaluate_model()
             mlflow.log_metrics(metrics)
 
-            # Log model artifact
-            mlflow.sklearn.log_model(self.clf, "model",
-                registered_model_name="mlops-efficiency-predictor")
-
-            # Log scaler
-            mlflow.log_artifact(os.path.join(self.processed_path, "scaler.pkl"))
+            # Upload artifacts to S3 via MLflow — gracefully degrade if S3 is unreachable.
+            # The local model.pkl is already written by train_model(); retraining can
+            # succeed (hot-swap from local file) even if this upload fails.
+            try:
+                mlflow.sklearn.log_model(self.clf, "model",
+                    registered_model_name="mlops-efficiency-predictor")
+                mlflow.log_artifact(os.path.join(self.processed_path, "scaler.pkl"))
+            except Exception as s3_err:
+                logger.warning(
+                    f"S3/MLflow artifact upload failed — model saved locally only. "
+                    f"Reason: {s3_err}"
+                )
 
             run_id = run.info.run_id
             logger.info("MLflow run complete", extra={
@@ -126,6 +136,19 @@ class ModelTraining:
 
             metrics["mlflow_run_id"] = run_id
             return metrics
+
+    def _get_dvc_hash(self) -> str:
+        """Return DVC content hash of training data for reproducibility tracking."""
+        dvc_file = "artifacts/raw/data.csv.dvc"
+        if os.path.exists(dvc_file):
+            try:
+                import yaml
+                with open(dvc_file) as f:
+                    meta = yaml.safe_load(f)
+                return meta.get("outs", [{}])[0].get("md5", "no-dvc")[:12]
+            except Exception:
+                pass
+        return "no-dvc"
 
     def _run_without_mlflow(self) -> dict:
         self.train_model()

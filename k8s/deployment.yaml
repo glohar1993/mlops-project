@@ -1,20 +1,234 @@
+# ============================================================
+# Production-Grade Flask Deployment
+# Enterprise MLOps — Principal Engineer Hardened Config
+#
+# Changes from bare minimum:
+#   - 2 replicas (HA during rolling updates)
+#   - RollingUpdate: maxUnavailable=0 (zero-downtime)
+#   - Resource requests + limits (CPU throttling, OOM protection)
+#   - startupProbe (allows 150s for MLflow model load)
+#   - readinessProbe (removes pod from LB until ready)
+#   - livenessProbe (restarts hung pods automatically)
+#   - securityContext (non-root, no privilege escalation)
+#   - podAntiAffinity (pods spread across nodes)
+#   - Prometheus scrape annotations
+#   - Environment from K8s Secret + ConfigMap
+# ============================================================
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: flask-deployment
+  namespace: default
+  labels:
+    app: flask-app
+    tier: serving
+    managed-by: jenkins
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: flask-app
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0    # zero-downtime: never kill a pod before replacement is ready
+      maxSurge: 1          # spin up 1 extra pod during update, then drain old
   template:
     metadata:
       labels:
         app: flask-app
+        tier: serving
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path:   "/metrics"
+        prometheus.io/port:   "5001"
     spec:
+      terminationGracePeriodSeconds: 30
+
+      # Spread pods across different nodes
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values: [flask-app]
+                topologyKey: kubernetes.io/hostname
+
+      # Non-root security context (matches Dockerfile mlops user)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+
+      volumes:
+        - name: prometheus-multiproc
+          emptyDir: {}
+        # Override application.py from ConfigMap — allows code updates
+        # without rebuilding the Docker image (dev/hotfix workflow)
+        - name: flask-app-code
+          configMap:
+            name: flask-app-code
+
       containers:
         - name: flask-container
           image: 824033490704.dkr.ecr.us-east-2.amazonaws.com/mlops-flask-app:latest
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           ports:
-            - containerPort: 5001
+            - name: http
+              containerPort: 5001
+              protocol: TCP
+
+          # Environment — all secrets from K8s Secret (no hardcoded values)
+          env:
+            - name: MLFLOW_TRACKING_URI
+              valueFrom:
+                secretKeyRef:
+                  name: mlops-secrets
+                  key: MLFLOW_TRACKING_URI
+            - name: MLFLOW_MODEL_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: mlops-secrets
+                  key: MLFLOW_MODEL_NAME
+            - name: AWS_DEFAULT_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: mlops-secrets
+                  key: AWS_DEFAULT_REGION
+            - name: S3_ARTIFACTS_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: mlops-secrets
+                  key: S3_ARTIFACTS_BUCKET
+            - name: ENVIRONMENT
+              valueFrom:
+                secretKeyRef:
+                  name: mlops-secrets
+                  key: ENVIRONMENT
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: PROMETHEUS_MULTIPROC_DIR
+              value: "/tmp/prometheus_multiproc"
+
+          volumeMounts:
+            - name: prometheus-multiproc
+              mountPath: /tmp/prometheus_multiproc
+            - name: flask-app-code
+              mountPath: /app/application.py
+              subPath: application.py
+            - name: flask-app-code
+              mountPath: /app/src/feature_registry.py
+              subPath: feature_registry.py
+            - name: flask-app-code
+              mountPath: /app/src/model_training.py
+              subPath: model_training.py
+
+          # Resource guarantees — prevents noisy-neighbor starvation
+          resources:
+            requests:
+              cpu: "250m"     # 0.25 CPU guaranteed
+              memory: "256Mi" # 256MB guaranteed
+            limits:
+              cpu: "1000m"    # max 1 CPU (burst allowed)
+              memory: "1Gi"   # max 1GB (OOM kill above this)
+
+          # Startup probe — gives Flask/MLflow 150s to load model before
+          # readiness/liveness probes begin evaluating
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 5001
+            failureThreshold: 30   # 30 * 5s = 150s max startup budget
+            periodSeconds: 5
+
+          # Readiness probe — only send traffic when model is loaded
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5001
+            periodSeconds: 5
+            failureThreshold: 3   # remove from LB after 15s of failure
+            successThreshold: 1
+
+          # Liveness probe — restart hung pods (not just slow ones)
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5001
+            periodSeconds: 10
+            failureThreshold: 3   # restart after 30s of consecutive failures
+            successThreshold: 1
+
+---
+# ============================================================
+# Horizontal Pod Autoscaler
+# Scales 2→5 pods based on CPU + memory pressure
+# ============================================================
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: flask-hpa
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: flask-deployment
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60   # scale up when avg CPU > 60%
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 70   # scale up when avg memory > 70%
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30    # wait 30s before scaling up
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 30
+    scaleDown:
+      stabilizationWindowSeconds: 120   # wait 2min before scaling down
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+
+---
+# ============================================================
+# PodDisruptionBudget
+# Ensures at least 1 pod stays running during:
+#   - Node drains (kubectl drain)
+#   - Voluntary evictions
+#   - Rolling updates
+# ============================================================
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: flask-pdb
+  namespace: default
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: flask-app
