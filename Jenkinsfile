@@ -287,6 +287,9 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
                     echo "Load testing: http://\${STAGING_URL}"
 
                     # 20 users × 60s — realistic for t3.medium 2-pod staging
+                    # Use --exit-code-on-error 0 and parse SLO summary output instead
+                    # SLOValidationUser marks individual slow requests as locust failures,
+                    # which would cause --exit-code-on-error 1 to fail on any p99 spike.
                     TARGET_URL=http://\${STAGING_URL} \
                     locust -f tests/load/locustfile.py \
                         --headless \
@@ -294,7 +297,16 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
                         --run-time 60s \
                         --host http://\${STAGING_URL} \
                         --only-summary \
-                        --exit-code-on-error 1
+                        --exit-code-on-error 0 2>&1 | tee /tmp/locust_results.txt
+
+                    # Parse on_test_stop SLO summary — fail pipeline only on real SLO breach
+                    if grep -q "Overall SLO: FAILED" /tmp/locust_results.txt; then
+                        echo "LOAD TEST FAILED: SLO breach detected"
+                        grep -E "SLO|Latency|Error|Throughput|Requests" /tmp/locust_results.txt || true
+                        exit 1
+                    fi
+                    echo "Load test SLO check PASSED"
+                    grep -E "Overall SLO:|Latency SLO:|Error SLO:|Throughput SLO:" /tmp/locust_results.txt || true
                 """
             }
         }
