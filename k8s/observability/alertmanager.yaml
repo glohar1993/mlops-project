@@ -1,6 +1,5 @@
 # ============================================================
-# Alertmanager — fires alerts when Prometheus rules trigger
-# In production: routes to Slack / PagerDuty / Email
+# AlertManager — Production-grade routing, inhibition, watchdog
 # ============================================================
 ---
 apiVersion: v1
@@ -8,132 +7,154 @@ kind: ConfigMap
 metadata:
   name: alertmanager-config-template
 data:
-  # Template file — ${SLACK_WEBHOOK_URL} is substituted at pod startup
-  # by the init container using envsubst. The rendered file is written
-  # to an emptyDir volume that the main container reads.
   alertmanager.yml.tmpl: |
     global:
       resolve_timeout: 5m
 
-    route:
-      group_by: ['alertname', 'service']
-      group_wait: 10s
-      group_interval: 5m
-      repeat_interval: 1h
-      receiver: 'slack-alerts'
-      routes:
-        - match:
-            severity: critical
-          receiver: 'slack-alerts'
-        - match:
-            severity: warning
-          receiver: 'slack-alerts'
+    # ── Inhibition Rules ──────────────────────────────────────────
+    # If a "source" alert fires, suppress matching "target" alerts.
+    # Prevents alert storms where one root cause fires 10 alerts.
+    inhibit_rules:
+      # Flask down → suppress model quality / drift / retrain alerts
+      # Rationale: no serving layer = no predictions = those alerts are noise
+      - source_match:
+          alertname: FlaskAppDown
+          severity: critical
+        target_match_re:
+          alertname: 'ModelDrift.*|HighPrediction.*|RetrainingFailed|LowPredictionConfidence|ModelAccuracy.*|DagRun.*'
+        equal: ['service']
 
+      # Model not loaded → suppress drift and retraining alerts
+      - source_match:
+          alertname: ModelNotLoaded
+          severity: critical
+        target_match_re:
+          alertname: 'ModelDrift.*|RetrainingFailed|RetrainingLoop.*'
+        equal: ['service']
+
+      # Critical already firing → suppress warning for same alert family
+      - source_match:
+          severity: critical
+        target_match:
+          severity: warning
+        equal: ['alertname', 'service']
+
+    # ── Routing Tree ──────────────────────────────────────────────
+    route:
+      # Root: catch-all (P2 warnings, batched)
+      receiver: 'slack-warnings'
+      group_by: ['alertname', 'service', 'layer']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+
+      routes:
+        # Watchdog heartbeat — always fires, silence means monitoring is down
+        - matchers:
+            - alertname = "Watchdog"
+          receiver: 'slack-watchdog'
+          group_wait: 0s
+          repeat_interval: 5m
+          continue: false
+
+        # P0/P1 Critical — immediate page, loud, short repeat
+        - matchers:
+            - severity = "critical"
+          receiver: 'slack-critical'
+          group_wait: 10s
+          group_interval: 1m
+          repeat_interval: 15m
+          continue: false
+
+        # P2 Warning — batched, less frequent
+        - matchers:
+            - severity = "warning"
+          receiver: 'slack-warnings'
+          group_wait: 2m
+          group_interval: 10m
+          repeat_interval: 2h
+          continue: false
+
+        # Info / DAG success — informational only
+        - matchers:
+            - severity = "info"
+          receiver: 'slack-info'
+          group_wait: 10s
+          repeat_interval: 1h
+
+    # ── Receivers ─────────────────────────────────────────────────
     receivers:
-      - name: 'slack-alerts'
+      # P0/P1 Critical — rotating_light, instant, every 15m until resolved
+      - name: 'slack-critical'
         slack_configs:
           - api_url: '${SLACK_WEBHOOK_URL}'
-            channel: '#mlops-alerts'
+            channel: '#all-mlops'
             send_resolved: true
-            title: '{{ if eq .Status "firing" }}🚨{{ else }}✅{{ end }} {{ .CommonLabels.alertname }}'
-            text: >-
+            icon_emoji: ':rotating_light:'
+            username: 'MLOps CRITICAL'
+            color: '{{ if eq .Status "firing" }}danger{{ else }}good{{ end }}'
+            title: '{{ if eq .Status "firing" }}🚨 CRITICAL{{ else }}✅ RESOLVED{{ end }} — {{ .CommonLabels.alertname }}'
+            title_link: 'http://18.189.188.181:30090/alerts'
+            text: |
               {{ range .Alerts }}
-                *Alert:* {{ .Annotations.summary }}
-                *Details:* {{ .Annotations.description }}
-                *Severity:* {{ .Labels.severity }}
+              *Alert:* {{ .Labels.alertname }}
+              *Summary:* {{ .Annotations.summary }}
+              *Details:* {{ .Annotations.description }}
+              *Layer:* {{ .Labels.layer }}
+              *Started:* {{ .StartsAt.Format "2006-01-02 15:04 UTC" }}
+              {{ if .Annotations.runbook_url }}*Runbook:* {{ .Annotations.runbook_url }}{{ end }}
+              {{ end }}
+            actions:
+              - type: button
+                text: 'Grafana Dashboard'
+                url: 'http://18.189.188.181:30030'
+              - type: button
+                text: 'Prometheus Alerts'
+                url: 'http://18.189.188.181:30090/alerts'
+              - type: button
+                text: 'Airflow UI'
+                url: 'http://a86b97ed8436c4b9896b7dd139d26693-2143784381.us-east-2.elb.amazonaws.com:8080'
+
+      # P2 Warning — batched, less noisy
+      - name: 'slack-warnings'
+        slack_configs:
+          - api_url: '${SLACK_WEBHOOK_URL}'
+            channel: '#all-mlops'
+            send_resolved: true
+            icon_emoji: ':warning:'
+            username: 'MLOps Warning'
+            color: '{{ if eq .Status "firing" }}warning{{ else }}good{{ end }}'
+            title: '{{ if eq .Status "firing" }}⚠️ WARNING{{ else }}✅ RESOLVED{{ end }} — {{ .CommonLabels.alertname }}'
+            title_link: 'http://18.189.188.181:30090/alerts'
+            text: |
+              {{ range .Alerts }}
+              *Alert:* {{ .Labels.alertname }} | *Layer:* {{ .Labels.layer }}
+              *Summary:* {{ .Annotations.summary }}
               {{ end }}
 
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: prometheus-alert-rules
-data:
-  mlops_rules.yml: |
-    groups:
-      - name: mlops.production.rules
-        interval: 30s
-        rules:
+      # Watchdog heartbeat — silent success signal, absence = problem
+      - name: 'slack-watchdog'
+        slack_configs:
+          - api_url: '${SLACK_WEBHOOK_URL}'
+            channel: '#all-mlops'
+            send_resolved: false
+            icon_emoji: ':dog:'
+            username: 'Watchdog'
+            title: '🐕 Prometheus heartbeat — monitoring alive'
+            text: 'All systems operational. {{ now | date "2006-01-02 15:04 UTC" }}'
 
-          # ALERT: Model drift is CRITICAL
-          - alert: ModelDriftCritical
-            expr: ml_drift_status == 2
-            for: 1m
-            labels:
-              severity: critical
-              service: mlops
-              pipeline: drift-detection
-            annotations:
-              summary: "🚨 CRITICAL model drift detected"
-              description: "ml_drift_status is CRITICAL. PSI={{ $value }}. Retraining pipeline should trigger."
-
-          # ALERT: Model drift WARNING
-          - alert: ModelDriftWarning
-            expr: ml_drift_status == 1
-            for: 2m
-            labels:
-              severity: warning
-              service: mlops
-              pipeline: drift-detection
-            annotations:
-              summary: "⚠️ Model drift WARNING"
-              description: "Drift PSI is above warning threshold. Monitor closely."
-
-          # ALERT: ML model not loaded
-          - alert: ModelNotLoaded
-            expr: ml_model_loaded == 0
-            for: 1m
-            labels:
-              severity: critical
-              service: mlops
-            annotations:
-              summary: "🚨 ML model not loaded"
-              description: "The ML model failed to load. App cannot make predictions."
-
-          # ALERT: High prediction error rate
-          - alert: HighPredictionErrorRate
-            expr: rate(ml_prediction_errors_total[5m]) > 0.1
-            for: 2m
-            labels:
-              severity: critical
-              service: mlops
-            annotations:
-              summary: "🚨 High prediction error rate"
-              description: "More than 10% of predictions are erroring. Check input data."
-
-          # ALERT: Flask app down
-          - alert: FlaskAppDown
-            expr: up{job="mlops-flask-app"} == 0
-            for: 1m
-            labels:
-              severity: critical
-              service: mlops
-            annotations:
-              summary: "🚨 Flask serving app is DOWN"
-              description: "Prometheus cannot scrape the Flask app. Pod may be crashed."
-
-          # ALERT: Prediction latency too high
-          - alert: HighPredictionLatency
-            expr: histogram_quantile(0.99, rate(ml_prediction_duration_seconds_bucket[5m])) > 1.0
-            for: 3m
-            labels:
-              severity: warning
-              service: mlops
-            annotations:
-              summary: "⚠️ High prediction latency (p99 > 1s)"
-              description: "p99 prediction latency is above 1 second. Model may need optimization."
-
-          # ALERT: Retraining failed (rolled back)
-          - alert: RetrainingFailed
-            expr: ml_retraining_last_success == 0
-            for: 1m
-            labels:
-              severity: warning
-              service: mlops
-              pipeline: retraining
-            annotations:
-              summary: "⚠️ Last model retraining was rolled back"
-              description: "New model performed worse than old model. Rollback occurred."
+      # Info — DAG success, low-urgency events
+      - name: 'slack-info'
+        slack_configs:
+          - api_url: '${SLACK_WEBHOOK_URL}'
+            channel: '#all-mlops'
+            send_resolved: true
+            icon_emoji: ':information_source:'
+            username: 'MLOps Info'
+            color: 'good'
+            title: 'ℹ️ {{ .CommonLabels.alertname }}'
+            text: |
+              {{ range .Alerts }}{{ .Annotations.summary }}{{ end }}
 
 ---
 apiVersion: apps/v1
@@ -149,16 +170,22 @@ spec:
     metadata:
       labels:
         app: alertmanager
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9093"
     spec:
-      # Init container renders the config template by substituting
-      # ${SLACK_WEBHOOK_URL} from the mlops-secrets Secret.
       initContainers:
         - name: config-gen
           image: busybox:1.36
           command:
             - sh
             - -c
-            - sed "s|\${SLACK_WEBHOOK_URL}|$SLACK_WEBHOOK_URL|g" /tmpl/alertmanager.yml.tmpl > /etc/alertmanager/alertmanager.yml
+            - |
+              # envsubst substitutes only listed vars — safe with other ${} in template
+              sed "s|\${SLACK_WEBHOOK_URL}|${SLACK_WEBHOOK_URL}|g" \
+                /tmpl/alertmanager.yml.tmpl > /etc/alertmanager/alertmanager.yml
+              echo "[config-gen] Rendered AlertManager config:"
+              grep -E "channel:|receiver:|api_url:|severity" /etc/alertmanager/alertmanager.yml
           env:
             - name: SLACK_WEBHOOK_URL
               valueFrom:
@@ -172,11 +199,25 @@ spec:
               mountPath: /etc/alertmanager
       containers:
         - name: alertmanager
-          image: prom/alertmanager:latest
+          image: prom/alertmanager:v0.31.1
           args:
             - "--config.file=/etc/alertmanager/alertmanager.yml"
+            - "--storage.path=/alertmanager"
+            - "--web.external-url=http://18.189.188.181:30093"
           ports:
             - containerPort: 9093
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: 9093
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 9093
+            initialDelaySeconds: 5
+            periodSeconds: 10
           volumeMounts:
             - name: config-rendered
               mountPath: /etc/alertmanager

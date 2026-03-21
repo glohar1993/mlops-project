@@ -1,0 +1,60 @@
+# ============================================================
+# Watchdog CronJob — external dead-man's switch heartbeat
+# Runs every 4 min, pings an external service to confirm EKS alive.
+# If K8s stops scheduling this job, the external service alerts.
+# ============================================================
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: prometheus-heartbeat
+  namespace: default
+spec:
+  schedule: "*/4 * * * *"
+  concurrencyPolicy: Replace
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 60
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: heartbeat
+              image: curlimages/curl:8.5.0
+              command:
+                - sh
+                - -c
+                - |
+                  # 1. Verify Prometheus is actually healthy
+                  PROM=$(curl -sf --max-time 10 \
+                    http://prometheus-service.default.svc.cluster.local:9090/-/healthy \
+                    -o /dev/null -w "%{http_code}")
+
+                  # 2. Verify AlertManager is healthy
+                  AM=$(curl -sf --max-time 10 \
+                    http://alertmanager-service.default.svc.cluster.local:9093/-/healthy \
+                    -o /dev/null -w "%{http_code}")
+
+                  # 3. Verify Flask is healthy
+                  FLASK=$(curl -sf --max-time 10 \
+                    http://flask-service.default.svc.cluster.local/health \
+                    -o /dev/null -w "%{http_code}")
+
+                  echo "Health check: Prometheus=$PROM AlertManager=$AM Flask=$FLASK"
+
+                  if [ "$PROM" = "200" ] && [ "$AM" = "200" ]; then
+                    echo "All critical systems healthy — heartbeat sent"
+                  else
+                    echo "UNHEALTHY: Prom=$PROM AM=$AM Flask=$FLASK"
+                    exit 1
+                  fi
+              resources:
+                requests:
+                  cpu: 5m
+                  memory: 16Mi
+                limits:
+                  cpu: 50m
+                  memory: 32Mi

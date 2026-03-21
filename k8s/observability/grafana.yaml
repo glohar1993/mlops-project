@@ -1,4 +1,5 @@
 ---
+# Grafana datasources — Prometheus + Loki
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -7,13 +8,34 @@ data:
   datasource.yaml: |
     apiVersion: 1
     datasources:
+      # Prometheus — all metrics panels use this
       - name: Prometheus
         type: prometheus
+        uid: prometheus
         url: http://prometheus-service:9090
         isDefault: true
         access: proxy
+        jsonData:
+          timeInterval: "15s"
+          queryTimeout: "60s"
+
+      # Loki — log streams, LogQL queries, trace correlation
+      - name: Loki
+        type: loki
+        uid: loki
+        url: http://loki.logging.svc.cluster.local:3100
+        access: proxy
+        jsonData:
+          maxLines: 1000
+          # Correlation: metric panel data link opens Loki filtered to same time range
+          derivedFields:
+            - name: trace_id
+              matcherRegex: '"trace_id":"([^"]+)"'
+              url: '/explore?orgId=1&left={"datasource":"loki","queries":[{"expr":"{app=\"flask-app\"} |= \"$${__value.raw}\""}]}'
+              datasourceUid: loki
 
 ---
+# Dashboard provider — tells Grafana where to find dashboard JSON files
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -25,10 +47,20 @@ data:
       - name: 'MLOps Dashboards'
         folder: 'MLOps'
         type: file
+        disableDeletion: false
+        updateIntervalSeconds: 10
         options:
           path: /var/lib/grafana/dashboards
+      - name: 'MLOps Logs'
+        folder: 'MLOps Logs'
+        type: file
+        disableDeletion: false
+        updateIntervalSeconds: 10
+        options:
+          path: /var/lib/grafana/dashboards/logs
 
 ---
+# Existing metrics dashboard (unchanged)
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -102,6 +134,275 @@ data:
     }
 
 ---
+# Logs dashboard — centralized log view using Loki
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-logs
+data:
+  mlops-logs.json: |
+    {
+      "title": "MLOps — Centralized Logs",
+      "uid": "mlops-logs",
+      "description": "Live log streams from all MLOps pods. Search by trace_id, level, or keyword.",
+      "tags": ["mlops", "logs", "loki"],
+      "refresh": "10s",
+      "time": {"from": "now-30m", "to": "now"},
+      "schemaVersion": 38,
+      "templating": {
+        "list": [
+          {
+            "name": "app",
+            "label": "Application",
+            "type": "query",
+            "datasource": {"type": "loki", "uid": "loki"},
+            "definition": "label_values(app)",
+            "query": "label_values(app)",
+            "current": {"text": "flask-app", "value": "flask-app"},
+            "options": [],
+            "refresh": 2
+          },
+          {
+            "name": "level",
+            "label": "Log Level",
+            "type": "custom",
+            "query": "ALL,ERROR,WARNING,INFO,DEBUG",
+            "current": {"text": "ALL", "value": "ALL"},
+            "options": [
+              {"text": "ALL", "value": "ALL"},
+              {"text": "ERROR", "value": "ERROR"},
+              {"text": "WARNING", "value": "WARNING"},
+              {"text": "INFO", "value": "INFO"}
+            ]
+          },
+          {
+            "name": "trace_id",
+            "label": "Trace ID",
+            "type": "textbox",
+            "query": "",
+            "current": {"text": "", "value": ""},
+            "hide": 0
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Observability Health",
+          "type": "row",
+          "gridPos": {"x": 0, "y": 0, "w": 24, "h": 1},
+          "collapsed": false
+        },
+        {
+          "id": 2,
+          "title": "Prometheus",
+          "type": "stat",
+          "gridPos": {"x": 0, "y": 1, "w": 4, "h": 3},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "targets": [{"expr": "up{job=\"prometheus\"}", "legendFormat": "UP"}],
+          "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "orientation": "auto", "colorMode": "background"},
+          "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": 0}, {"color": "green", "value": 1}]}, "mappings": [{"options": {"0": {"text": "DOWN"}, "1": {"text": "UP"}}, "type": "value"}]}}
+        },
+        {
+          "id": 3,
+          "title": "AlertManager",
+          "type": "stat",
+          "gridPos": {"x": 4, "y": 1, "w": 4, "h": 3},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "targets": [{"expr": "up{job=\"alertmanager\"}", "legendFormat": "UP"}],
+          "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+          "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": 0}, {"color": "green", "value": 1}]}, "mappings": [{"options": {"0": {"text": "DOWN"}, "1": {"text": "UP"}}, "type": "value"}]}}
+        },
+        {
+          "id": 4,
+          "title": "Flask App",
+          "type": "stat",
+          "gridPos": {"x": 8, "y": 1, "w": 4, "h": 3},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "targets": [{"expr": "up{job=\"mlops-flask-app\"}", "legendFormat": "UP"}],
+          "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+          "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": 0}, {"color": "green", "value": 1}]}, "mappings": [{"options": {"0": {"text": "DOWN"}, "1": {"text": "UP"}}, "type": "value"}]}}
+        },
+        {
+          "id": 5,
+          "title": "Loki",
+          "type": "stat",
+          "gridPos": {"x": 12, "y": 1, "w": 4, "h": 3},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "targets": [{"expr": "up{job=\"loki\"}", "legendFormat": "UP"}],
+          "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+          "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": 0}, {"color": "green", "value": 1}]}, "mappings": [{"options": {"0": {"text": "DOWN"}, "1": {"text": "UP"}}, "type": "value"}]}}
+        },
+        {
+          "id": 6,
+          "title": "Active Firing Alerts",
+          "type": "stat",
+          "gridPos": {"x": 16, "y": 1, "w": 4, "h": 3},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "targets": [{"expr": "count(ALERTS{alertstate=\"firing\",alertname!=\"Watchdog\"})", "legendFormat": "Firing"}],
+          "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+          "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": 0}, {"color": "yellow", "value": 1}, {"color": "red", "value": 3}]}}}
+        },
+        {
+          "id": 7,
+          "title": "Log Error Rate (errors/min)",
+          "type": "timeseries",
+          "gridPos": {"x": 20, "y": 1, "w": 4, "h": 3},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "targets": [{"expr": "sum(rate({app=\"flask-app\"} |= \"ERROR\" [1m]))", "legendFormat": "errors/min"}]
+        },
+        {
+          "id": 10,
+          "title": "Live Log Stream — Flask App",
+          "type": "row",
+          "gridPos": {"x": 0, "y": 4, "w": 24, "h": 1},
+          "collapsed": false
+        },
+        {
+          "id": 11,
+          "title": "Flask App Logs",
+          "description": "Live logs from flask-app pods. Filter by level or search by trace_id.",
+          "type": "logs",
+          "gridPos": {"x": 0, "y": 5, "w": 24, "h": 12},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "targets": [
+            {
+              "expr": "{app=\"flask-app\"} | json | line_format \"{{.level}} | {{.message}}\"",
+              "refId": "A",
+              "legendFormat": ""
+            }
+          ],
+          "options": {
+            "showTime": true,
+            "showLabels": true,
+            "showCommonLabels": false,
+            "wrapLogMessage": false,
+            "sortOrder": "Descending",
+            "dedupStrategy": "none",
+            "enableLogDetails": true
+          }
+        },
+        {
+          "id": 20,
+          "title": "Error Log Spike",
+          "type": "timeseries",
+          "gridPos": {"x": 0, "y": 17, "w": 12, "h": 6},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "targets": [
+            {"expr": "sum(count_over_time({app=\"flask-app\"} |= \"ERROR\" [1m]))", "legendFormat": "ERROR/min", "refId": "A"},
+            {"expr": "sum(count_over_time({app=\"flask-app\"} |= \"WARNING\" [1m]))", "legendFormat": "WARNING/min", "refId": "B"}
+          ],
+          "fieldConfig": {"defaults": {"custom": {"lineWidth": 2}}}
+        },
+        {
+          "id": 21,
+          "title": "Airflow DAG Logs",
+          "type": "logs",
+          "gridPos": {"x": 12, "y": 17, "w": 12, "h": 6},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "targets": [
+            {
+              "expr": "{namespace=\"default\"} |~ \"airflow|mlops_daily|mlops_drift\" | line_format \"{{.app}} | {{.message}}\"",
+              "refId": "A"
+            }
+          ],
+          "options": {"showTime": true, "wrapLogMessage": false, "sortOrder": "Descending"}
+        },
+        {
+          "id": 30,
+          "title": "Trace Correlation",
+          "type": "row",
+          "gridPos": {"x": 0, "y": 23, "w": 24, "h": 1},
+          "collapsed": false
+        },
+        {
+          "id": 31,
+          "title": "Trace ID Search — all logs for a single request",
+          "description": "Enter a trace_id from an alert or error to see all log lines for that request across all Flask pods.",
+          "type": "logs",
+          "gridPos": {"x": 0, "y": 24, "w": 24, "h": 8},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "targets": [
+            {
+              "expr": "{app=\"flask-app\"} |= \"${trace_id}\" | json",
+              "refId": "A"
+            }
+          ],
+          "options": {"showTime": true, "sortOrder": "Ascending", "enableLogDetails": true}
+        }
+      ]
+    }
+
+---
+# Grafana alerting provisioning — contact points + notification policies
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-alerting-provisioning
+data:
+  alerting.yaml: |
+    apiVersion: 1
+
+    contactPoints:
+      - orgId: 1
+        name: critical-slack
+        receivers:
+          - uid: critical-slack-uid
+            type: slack
+            disableResolveMessage: false
+            settings:
+              url: $__env{SLACK_WEBHOOK_URL}
+              channel: "#all-mlops"
+              title: '{{ if eq .Status "firing" }}🚨 CRITICAL{{ else }}✅ RESOLVED{{ end }} — {{ .CommonLabels.alertname }}'
+              text: '{{ range .Alerts }}{{ .Annotations.summary }}{{ end }}'
+              icon_emoji: ":rotating_light:"
+              username: "MLOps CRITICAL"
+
+      - orgId: 1
+        name: warnings-slack
+        receivers:
+          - uid: warnings-slack-uid
+            type: slack
+            disableResolveMessage: false
+            settings:
+              url: $__env{SLACK_WEBHOOK_URL}
+              channel: "#all-mlops"
+              title: '{{ if eq .Status "firing" }}⚠️ WARNING{{ else }}✅ RESOLVED{{ end }} — {{ .CommonLabels.alertname }}'
+              text: '{{ range .Alerts }}{{ .Annotations.summary }}{{ end }}'
+              icon_emoji: ":warning:"
+
+      - orgId: 1
+        name: info-slack
+        receivers:
+          - uid: info-slack-uid
+            type: slack
+            disableResolveMessage: true
+            settings:
+              url: $__env{SLACK_WEBHOOK_URL}
+              channel: "#all-mlops"
+              title: 'ℹ️ {{ .CommonLabels.alertname }}'
+              text: '{{ range .Alerts }}{{ .Annotations.summary }}{{ end }}'
+              icon_emoji: ":information_source:"
+
+    policies:
+      - orgId: 1
+        receiver: warnings-slack
+        group_by: ['alertname']
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 4h
+        routes:
+          - receiver: critical-slack
+            object_matchers:
+              - [severity, =, critical]
+            group_wait: 10s
+            repeat_interval: 15m
+          - receiver: info-slack
+            object_matchers:
+              - [severity, =, info]
+            repeat_interval: 1h
+
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -118,23 +419,53 @@ spec:
     spec:
       containers:
         - name: grafana
-          image: grafana/grafana:latest
+          image: grafana/grafana:10.4.0
           ports:
             - containerPort: 3000
           env:
             - name: GF_SECURITY_ADMIN_USER
               value: "admin"
             - name: GF_SECURITY_ADMIN_PASSWORD
-              value: "mlops123"
+              value: "MLOps@2024"
             - name: GF_AUTH_ANONYMOUS_ENABLED
               value: "false"
+            # Unified alerting (Grafana-native contact points)
+            - name: GF_UNIFIED_ALERTING_ENABLED
+              value: "true"
+            - name: GF_ALERTING_ENABLED
+              value: "false"
+            # Slack webhook for Grafana contact point provisioning
+            - name: SLACK_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: mlops-secrets
+                  key: SLACK_WEBHOOK_URL
+            # External URL for correct data links
+            - name: GF_SERVER_ROOT_URL
+              value: "http://18.189.188.181:30030"
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 10
           volumeMounts:
             - name: datasource-config
               mountPath: /etc/grafana/provisioning/datasources
             - name: dashboard-provider
               mountPath: /etc/grafana/provisioning/dashboards
+            - name: alerting-provisioning
+              mountPath: /etc/grafana/provisioning/alerting
             - name: dashboard-json
               mountPath: /var/lib/grafana/dashboards
+            - name: dashboard-logs-json
+              mountPath: /var/lib/grafana/dashboards/logs
       volumes:
         - name: datasource-config
           configMap:
@@ -142,9 +473,15 @@ spec:
         - name: dashboard-provider
           configMap:
             name: grafana-dashboard-provider
+        - name: alerting-provisioning
+          configMap:
+            name: grafana-alerting-provisioning
         - name: dashboard-json
           configMap:
             name: grafana-dashboard-mlops
+        - name: dashboard-logs-json
+          configMap:
+            name: grafana-dashboard-logs
 
 ---
 apiVersion: v1

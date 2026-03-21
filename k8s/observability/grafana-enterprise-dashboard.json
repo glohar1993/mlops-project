@@ -1,0 +1,443 @@
+{
+  "title": "MLOps — Production Observability",
+  "uid": "mlops-enterprise-v2",
+  "description": "Enterprise-grade MLOps observability: model health, drift detection, API performance, infrastructure",
+  "tags": ["mlops", "production", "drift", "ml"],
+  "timezone": "utc",
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "schemaVersion": 38,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+
+    { "id": 100, "type": "row", "title": "🔴  HEALTH SCOREBOARD", "collapsed": false, "gridPos": {"x":0,"y":0,"w":24,"h":1} },
+
+    {
+      "id": 1, "type": "stat", "title": "Model Status",
+      "gridPos": {"x":0,"y":1,"w":3,"h":4},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "mappings": [
+            {"type":"value","options":{"0":{"text":"DOWN","color":"red"},"1":{"text":"LIVE","color":"green"}}}
+          ],
+          "thresholds": {"mode":"absolute","steps":[{"color":"red","value":0},{"color":"green","value":1}]},
+          "color": {"mode":"thresholds"}
+        }
+      },
+      "options": {"reduceOptions":{"calcs":["lastNotNull"]},"orientation":"auto","textMode":"auto","colorMode":"background","graphMode":"none","justifyMode":"center"},
+      "targets": [{"expr":"ml_model_loaded","legendFormat":"","refId":"A"}]
+    },
+
+    {
+      "id": 2, "type": "stat", "title": "Model Accuracy",
+      "gridPos": {"x":3,"y":1,"w":3,"h":4},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "thresholds": {"mode":"absolute","steps":[{"color":"red","value":0},{"color":"orange","value":0.85},{"color":"green","value":0.90}]},
+          "color": {"mode":"thresholds"}
+        }
+      },
+      "options": {"reduceOptions":{"calcs":["lastNotNull"]},"colorMode":"background","graphMode":"area","orientation":"auto"},
+      "targets": [{"expr":"ml_model_accuracy","legendFormat":"Accuracy","refId":"A"}]
+    },
+
+    {
+      "id": 3, "type": "stat", "title": "Drift Status",
+      "gridPos": {"x":6,"y":1,"w":3,"h":4},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "mappings": [
+            {"type":"value","options":{"0":{"text":"OK","color":"green"},"1":{"text":"WARNING","color":"orange"},"2":{"text":"CRITICAL","color":"red"}}}
+          ],
+          "thresholds": {"mode":"absolute","steps":[{"color":"green","value":0},{"color":"orange","value":1},{"color":"red","value":2}]},
+          "color": {"mode":"thresholds"}
+        }
+      },
+      "options": {"reduceOptions":{"calcs":["lastNotNull"]},"colorMode":"background","graphMode":"none"},
+      "targets": [{"expr":"ml_drift_status","legendFormat":"","refId":"A"}]
+    },
+
+    {
+      "id": 4, "type": "stat", "title": "Drift Score (PSI)",
+      "gridPos": {"x":9,"y":1,"w":3,"h":4},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 4,
+          "thresholds": {"mode":"absolute","steps":[{"color":"green","value":0},{"color":"orange","value":0.1},{"color":"red","value":0.2}]},
+          "color": {"mode":"thresholds"}
+        }
+      },
+      "options": {"reduceOptions":{"calcs":["lastNotNull"]},"colorMode":"background","graphMode":"area"},
+      "targets": [{"expr":"ml_prediction_drift_score","legendFormat":"PSI","refId":"A"}]
+    },
+
+    {
+      "id": 5, "type": "stat", "title": "Retrains Triggered",
+      "gridPos": {"x":12,"y":1,"w":3,"h":4},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {"mode":"absolute","steps":[{"color":"blue","value":0}]},
+          "color": {"mode":"thresholds"}
+        }
+      },
+      "options": {"reduceOptions":{"calcs":["lastNotNull"]},"colorMode":"background","graphMode":"area"},
+      "targets": [{"expr":"ml_retraining_total","legendFormat":"Retrains","refId":"A"}]
+    },
+
+    {
+      "id": 6, "type": "stat", "title": "Request Rate",
+      "gridPos": {"x":15,"y":1,"w":3,"h":4},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "decimals": 2,
+          "thresholds": {"mode":"absolute","steps":[{"color":"green","value":0}]},
+          "color": {"mode":"thresholds"}
+        }
+      },
+      "options": {"reduceOptions":{"calcs":["lastNotNull"]},"colorMode":"value","graphMode":"area"},
+      "targets": [{"expr":"rate(flask_http_request_total[1m])","legendFormat":"req/s","refId":"A"}]
+    },
+
+    {
+      "id": 7, "type": "stat", "title": "Error Rate",
+      "gridPos": {"x":18,"y":1,"w":3,"h":4},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "thresholds": {"mode":"absolute","steps":[{"color":"green","value":0},{"color":"orange","value":0.01},{"color":"red","value":0.05}]},
+          "color": {"mode":"thresholds"}
+        }
+      },
+      "options": {"reduceOptions":{"calcs":["lastNotNull"]},"colorMode":"background","graphMode":"area"},
+      "targets": [{"expr":"rate(flask_http_request_total{status!~\"2..\"}[5m]) / rate(flask_http_request_total[5m])","legendFormat":"Error %","refId":"A"}]
+    },
+
+    {
+      "id": 8, "type": "stat", "title": "P99 Latency",
+      "gridPos": {"x":21,"y":1,"w":3,"h":4},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 3,
+          "thresholds": {"mode":"absolute","steps":[{"color":"green","value":0},{"color":"orange","value":0.5},{"color":"red","value":1.0}]},
+          "color": {"mode":"thresholds"}
+        }
+      },
+      "options": {"reduceOptions":{"calcs":["lastNotNull"]},"colorMode":"background","graphMode":"area"},
+      "targets": [{"expr":"histogram_quantile(0.99, rate(flask_http_request_duration_seconds_bucket[5m]))","legendFormat":"p99","refId":"A"}]
+    },
+
+    { "id": 200, "type": "row", "title": "🤖  ML MODEL HEALTH", "collapsed": false, "gridPos": {"x":0,"y":5,"w":24,"h":1} },
+
+    {
+      "id": 10, "type": "timeseries", "title": "Model Accuracy Over Time",
+      "gridPos": {"x":0,"y":6,"w":12,"h":9},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit", "decimals": 3, "min": 0.7, "max": 1.0,
+          "color": {"mode":"palette-classic"},
+          "custom": {"lineWidth":2,"fillOpacity":10,"spanNulls":false,"showPoints":"never"},
+          "thresholds": {"mode":"absolute","steps":[{"color":"red","value":0},{"color":"orange","value":0.85},{"color":"green","value":0.90}]}
+        }
+      },
+      "options": {"tooltip":{"mode":"multi"},"legend":{"displayMode":"list","placement":"bottom"}},
+      "targets": [
+        {"expr":"ml_model_accuracy","legendFormat":"Accuracy","refId":"A"}
+      ]
+    },
+
+    {
+      "id": 11, "type": "timeseries", "title": "Drift Score (PSI) — Threshold Lines at 0.1 & 0.2",
+      "gridPos": {"x":12,"y":6,"w":12,"h":9},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none", "decimals": 4, "min": 0,
+          "color": {"mode":"palette-classic"},
+          "custom": {"lineWidth":2,"fillOpacity":15,"spanNulls":false,"showPoints":"never"},
+          "thresholds": {"mode":"absolute","steps":[{"color":"green","value":0},{"color":"orange","value":0.1},{"color":"red","value":0.2}]}
+        }
+      },
+      "options": {
+        "tooltip": {"mode":"multi"},
+        "legend": {"displayMode":"list","placement":"bottom"}
+      },
+      "targets": [
+        {"expr":"ml_prediction_drift_score","legendFormat":"Prediction Drift (PSI)","refId":"A"},
+        {"expr":"ml_feature_drift_score","legendFormat":"Feature Drift (PSI)","refId":"B"},
+        {"expr":"vector(0.1)","legendFormat":"WARNING threshold","refId":"C"},
+        {"expr":"vector(0.2)","legendFormat":"CRITICAL threshold","refId":"D"}
+      ]
+    },
+
+    {
+      "id": 12, "type": "timeseries", "title": "Retraining Events",
+      "gridPos": {"x":0,"y":15,"w":8,"h":7},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {"fixedColor":"purple","mode":"fixed"},
+          "custom": {"lineWidth":0,"fillOpacity":80,"spanNulls":false,"drawStyle":"bars","barAlignment":0}
+        }
+      },
+      "options": {"tooltip":{"mode":"multi"},"legend":{"displayMode":"list","placement":"bottom"}},
+      "targets": [
+        {"expr":"increase(ml_retraining_total[5m])","legendFormat":"Retrains per 5m","refId":"A"}
+      ]
+    },
+
+    {
+      "id": 13, "type": "timeseries", "title": "Drift Status Timeline (0=OK 1=WARN 2=CRITICAL)",
+      "gridPos": {"x":8,"y":15,"w":8,"h":7},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none", "min": 0, "max": 2,
+          "color": {"mode":"thresholds"},
+          "custom": {"lineWidth":3,"fillOpacity":30,"spanNulls":true,"showPoints":"never"},
+          "thresholds": {"mode":"absolute","steps":[{"color":"green","value":0},{"color":"orange","value":1},{"color":"red","value":2}]}
+        }
+      },
+      "options": {"tooltip":{"mode":"multi"},"legend":{"displayMode":"list","placement":"bottom"}},
+      "targets": [
+        {"expr":"ml_drift_status","legendFormat":"Drift Status","refId":"A"}
+      ]
+    },
+
+    {
+      "id": 14, "type": "gauge", "title": "Current Drift — Gauge",
+      "gridPos": {"x":16,"y":15,"w":8,"h":7},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none", "min": 0, "max": 0.5, "decimals": 4,
+          "thresholds": {"mode":"absolute","steps":[{"color":"green","value":0},{"color":"orange","value":0.1},{"color":"red","value":0.2}]},
+          "color": {"mode":"thresholds"}
+        }
+      },
+      "options": {"reduceOptions":{"calcs":["lastNotNull"]},"showThresholdLabels":true,"showThresholdMarkers":true},
+      "targets": [
+        {"expr":"ml_prediction_drift_score","legendFormat":"Prediction PSI","refId":"A"},
+        {"expr":"ml_feature_drift_score","legendFormat":"Feature PSI","refId":"B"}
+      ]
+    },
+
+    { "id": 300, "type": "row", "title": "🌐  API & SERVING PERFORMANCE", "collapsed": false, "gridPos": {"x":0,"y":22,"w":24,"h":1} },
+
+    {
+      "id": 20, "type": "timeseries", "title": "Request Rate by Status",
+      "gridPos": {"x":0,"y":23,"w":8,"h":8},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps", "decimals": 2,
+          "color": {"mode":"palette-classic"},
+          "custom": {"lineWidth":2,"fillOpacity":10,"spanNulls":false,"showPoints":"never"}
+        }
+      },
+      "options": {"tooltip":{"mode":"multi"},"legend":{"displayMode":"list","placement":"bottom"}},
+      "targets": [
+        {"expr":"rate(flask_http_request_total{status=~\"2..\"}[1m])","legendFormat":"2xx Success","refId":"A"},
+        {"expr":"rate(flask_http_request_total{status=~\"4..\"}[1m])","legendFormat":"4xx Client Error","refId":"B"},
+        {"expr":"rate(flask_http_request_total{status=~\"5..\"}[1m])","legendFormat":"5xx Server Error","refId":"C"}
+      ]
+    },
+
+    {
+      "id": 21, "type": "timeseries", "title": "Latency Percentiles — p50 / p95 / p99",
+      "gridPos": {"x":8,"y":23,"w":8,"h":8},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s", "decimals": 3,
+          "color": {"mode":"palette-classic"},
+          "custom": {"lineWidth":2,"fillOpacity":5,"spanNulls":false,"showPoints":"never"}
+        }
+      },
+      "options": {"tooltip":{"mode":"multi"},"legend":{"displayMode":"list","placement":"bottom"}},
+      "targets": [
+        {"expr":"histogram_quantile(0.50, rate(flask_http_request_duration_seconds_bucket[5m]))","legendFormat":"p50 (median)","refId":"A"},
+        {"expr":"histogram_quantile(0.95, rate(flask_http_request_duration_seconds_bucket[5m]))","legendFormat":"p95","refId":"B"},
+        {"expr":"histogram_quantile(0.99, rate(flask_http_request_duration_seconds_bucket[5m]))","legendFormat":"p99","refId":"C"}
+      ]
+    },
+
+    {
+      "id": 22, "type": "timeseries", "title": "Error Rate % Over Time",
+      "gridPos": {"x":16,"y":23,"w":8,"h":8},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit", "decimals": 2,
+          "color": {"fixedColor":"red","mode":"fixed"},
+          "custom": {"lineWidth":2,"fillOpacity":20,"spanNulls":false,"showPoints":"never"},
+          "thresholds": {"mode":"absolute","steps":[{"color":"green","value":0},{"color":"orange","value":0.01},{"color":"red","value":0.05}]}
+        }
+      },
+      "options": {"tooltip":{"mode":"multi"},"legend":{"displayMode":"list","placement":"bottom"}},
+      "targets": [
+        {"expr":"rate(flask_http_request_total{status!~\"2..\"}[5m]) / rate(flask_http_request_total[5m])","legendFormat":"Error Rate","refId":"A"}
+      ]
+    },
+
+    {
+      "id": 23, "type": "timeseries", "title": "Requests Per Endpoint",
+      "gridPos": {"x":0,"y":31,"w":12,"h":7},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "color": {"mode":"palette-classic"},
+          "custom": {"lineWidth":2,"fillOpacity":8,"spanNulls":false,"showPoints":"never"}
+        }
+      },
+      "options": {"tooltip":{"mode":"multi"},"legend":{"displayMode":"list","placement":"bottom"}},
+      "targets": [
+        {"expr":"rate(flask_http_request_duration_seconds_count{path=~\"/predict|/health|/drift|/retrain\"}[1m])","legendFormat":"{{path}}","refId":"A"}
+      ]
+    },
+
+    {
+      "id": 24, "type": "timeseries", "title": "Prediction Duration (ml_prediction_duration_seconds)",
+      "gridPos": {"x":12,"y":31,"w":12,"h":7},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s", "decimals": 4,
+          "color": {"mode":"palette-classic"},
+          "custom": {"lineWidth":2,"fillOpacity":8,"spanNulls":false,"showPoints":"never"}
+        }
+      },
+      "options": {"tooltip":{"mode":"multi"},"legend":{"displayMode":"list","placement":"bottom"}},
+      "targets": [
+        {"expr":"histogram_quantile(0.50, rate(ml_prediction_duration_seconds_bucket[5m]))","legendFormat":"p50 predict","refId":"A"},
+        {"expr":"histogram_quantile(0.95, rate(ml_prediction_duration_seconds_bucket[5m]))","legendFormat":"p95 predict","refId":"B"},
+        {"expr":"histogram_quantile(0.99, rate(ml_prediction_duration_seconds_bucket[5m]))","legendFormat":"p99 predict","refId":"C"}
+      ]
+    },
+
+    { "id": 400, "type": "row", "title": "🖥️  INFRASTRUCTURE & PROCESS", "collapsed": false, "gridPos": {"x":0,"y":38,"w":24,"h":1} },
+
+    {
+      "id": 30, "type": "timeseries", "title": "CPU Usage (seconds/s)",
+      "gridPos": {"x":0,"y":39,"w":8,"h":7},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit", "decimals": 2,
+          "color": {"fixedColor":"orange","mode":"fixed"},
+          "custom": {"lineWidth":2,"fillOpacity":15,"spanNulls":false,"showPoints":"never"}
+        }
+      },
+      "options": {"tooltip":{"mode":"multi"},"legend":{"displayMode":"list","placement":"bottom"}},
+      "targets": [
+        {"expr":"rate(process_cpu_seconds_total[1m])","legendFormat":"CPU Usage","refId":"A"}
+      ]
+    },
+
+    {
+      "id": 31, "type": "timeseries", "title": "Memory Usage (RSS)",
+      "gridPos": {"x":8,"y":39,"w":8,"h":7},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "color": {"fixedColor":"blue","mode":"fixed"},
+          "custom": {"lineWidth":2,"fillOpacity":15,"spanNulls":false,"showPoints":"never"}
+        }
+      },
+      "options": {"tooltip":{"mode":"multi"},"legend":{"displayMode":"list","placement":"bottom"}},
+      "targets": [
+        {"expr":"process_resident_memory_bytes","legendFormat":"RSS Memory","refId":"A"},
+        {"expr":"process_virtual_memory_bytes","legendFormat":"Virtual Memory","refId":"B"}
+      ]
+    },
+
+    {
+      "id": 32, "type": "timeseries", "title": "Open File Descriptors",
+      "gridPos": {"x":16,"y":39,"w":8,"h":7},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {"fixedColor":"green","mode":"fixed"},
+          "custom": {"lineWidth":2,"fillOpacity":10,"spanNulls":false,"showPoints":"never"}
+        }
+      },
+      "options": {"tooltip":{"mode":"multi"},"legend":{"displayMode":"list","placement":"bottom"}},
+      "targets": [
+        {"expr":"process_open_fds","legendFormat":"Open FDs","refId":"A"},
+        {"expr":"process_max_fds","legendFormat":"Max FDs","refId":"B"}
+      ]
+    },
+
+    { "id": 500, "type": "row", "title": "🔔  ACTIVE ALERTS & SLA", "collapsed": false, "gridPos": {"x":0,"y":46,"w":24,"h":1} },
+
+    {
+      "id": 40, "type": "alertlist", "title": "Active Alerts",
+      "gridPos": {"x":0,"y":47,"w":12,"h":8},
+      "options": {
+        "alertInstanceLabelFilter": "",
+        "alertName": "",
+        "dashboardAlerts": false,
+        "groupBy": ["alertname","severity"],
+        "groupMode": "default",
+        "maxItems": 20,
+        "sortOrder": 1,
+        "stateFilter": {"error":true,"firing":true,"noData":false,"normal":false,"pending":true}
+      }
+    },
+
+    {
+      "id": 41, "type": "timeseries", "title": "SLA: Request Success Rate (target >99%)",
+      "gridPos": {"x":12,"y":47,"w":12,"h":8},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit", "decimals": 3, "min": 0.9, "max": 1.0,
+          "color": {"mode":"thresholds"},
+          "custom": {"lineWidth":2,"fillOpacity":10,"spanNulls":false,"showPoints":"never"},
+          "thresholds": {"mode":"absolute","steps":[{"color":"red","value":0},{"color":"orange","value":0.95},{"color":"green","value":0.99}]}
+        }
+      },
+      "options": {"tooltip":{"mode":"multi"},"legend":{"displayMode":"list","placement":"bottom"}},
+      "targets": [
+        {"expr":"rate(flask_http_request_total{status=~\"2..\"}[5m]) / rate(flask_http_request_total[5m])","legendFormat":"Success Rate","refId":"A"},
+        {"expr":"vector(0.99)","legendFormat":"SLA Target (99%)","refId":"B"}
+      ]
+    },
+
+    { "id": 600, "type": "row", "title": "📊  PYTHON RUNTIME (GC & INTERNALS)", "collapsed": true, "gridPos": {"x":0,"y":55,"w":24,"h":1} },
+
+    {
+      "id": 50, "type": "timeseries", "title": "GC Collections per Second",
+      "gridPos": {"x":0,"y":56,"w":12,"h":7},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "color": {"mode":"palette-classic"},
+          "custom": {"lineWidth":1,"fillOpacity":8,"spanNulls":false,"showPoints":"never"}
+        }
+      },
+      "options": {"tooltip":{"mode":"multi"},"legend":{"displayMode":"list","placement":"bottom"}},
+      "targets": [
+        {"expr":"rate(python_gc_collections_total[1m])","legendFormat":"Gen {{generation}} GC/s","refId":"A"}
+      ]
+    },
+
+    {
+      "id": 51, "type": "timeseries", "title": "GC Objects Collected",
+      "gridPos": {"x":12,"y":56,"w":12,"h":7},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {"mode":"palette-classic"},
+          "custom": {"lineWidth":1,"fillOpacity":8,"spanNulls":false,"showPoints":"never"}
+        }
+      },
+      "options": {"tooltip":{"mode":"multi"},"legend":{"displayMode":"list","placement":"bottom"}},
+      "targets": [
+        {"expr":"rate(python_gc_objects_collected_total[1m])","legendFormat":"Gen {{generation}} objects/s","refId":"A"}
+      ]
+    }
+
+  ]
+}
