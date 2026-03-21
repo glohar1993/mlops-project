@@ -70,16 +70,11 @@ dag = DAG(
 def validate_data(**context):
     """Check data quality before training."""
     import pandas as pd  # noqa: PLC0415 — lazy import: not in airflow base image
+    from feature_registry import REQUIRED_RAW_COLUMNS  # noqa: PLC0415
     print(f"Loading data from {DATA_PATH}")
     df = pd.read_csv(DATA_PATH)
 
-    required_cols = [
-        "Operation_Mode", "Temperature_C", "Vibration_Hz",
-        "Power_Consumption_kW", "Network_Latency_ms", "Packet_Loss_%",
-        "Quality_Control_Defect_Rate_%", "Production_Speed_units_per_hr",
-        "Predictive_Maintenance_Score", "Error_Rate_%",
-        "Year", "Month", "Day", "Hour", "Efficiency_Category"
-    ]
+    required_cols = REQUIRED_RAW_COLUMNS  # raw columns from feature_registry (no derived cols)
 
     errors = []
 
@@ -116,6 +111,16 @@ def preprocess_data(**context):
     from sklearn.preprocessing import StandardScaler  # noqa: PLC0415
     data_path = context["ti"].xcom_pull(task_ids="validate_data", key="data_path")
     df = pd.read_csv(data_path)
+
+    # Extract time features from Timestamp (raw data has Timestamp, not Year/Month/Day/Hour)
+    df["Timestamp"] = pd.to_datetime(df["Timestamp"], errors="coerce")
+    df["Year"]  = df["Timestamp"].dt.year
+    df["Month"] = df["Timestamp"].dt.month
+    df["Day"]   = df["Timestamp"].dt.day
+    df["Hour"]  = df["Timestamp"].dt.hour
+
+    # Encode Operation_Mode to numeric (raw data has strings like Mode_A)
+    df["Operation_Mode"] = df["Operation_Mode"].apply(encode_operation_mode)
 
     feature_cols = FEATURE_COLUMNS   # from feature_registry
 
