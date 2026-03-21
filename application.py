@@ -93,7 +93,12 @@ prediction_confidence_avg = Gauge(
 ab_test_requests = Counter(
     'ml_ab_test_requests_total', 'A/B test request count per model variant', ['model'])
 
-# DAG pipeline health counters
+# DAG pipeline health counters — scraped by Prometheus → alert rules → Grafana
+dag_runs = Counter(
+    'ml_dag_runs_total',
+    'DAG run outcomes by dag_id and status (success/failure/retry)',
+    ['dag_id', 'status'])
+
 dag_data_validation_failures = Counter(
     'ml_dag_data_validation_failures_total',
     'Number of times Airflow DAG data validation step failed')
@@ -417,16 +422,41 @@ def record_dag_duration():
 @app.route("/dag-event", methods=["POST"])
 def record_dag_event():
     """
-    Receive pipeline events from Airflow DAGs.
+    Receive DAG lifecycle events from Airflow callbacks.
 
-    Request JSON: {"event": "data_validation_failure", "dag_id": "...", "detail": "..."}
-    Supported events: data_validation_failure
+    This is the bridge that makes DAG runs visible in Prometheus → Grafana → Slack.
+    The real production flow:
+      Airflow callback → POST /dag-event → Prometheus counter updated
+      → Prometheus evaluates alert rule → FIRING sent to AlertManager
+      → AlertManager routes to Slack AND Grafana shows alert as FIRING
+
+    Request JSON:
+      {"event": "dag_success",          "dag_id": "mlops_daily_training", "duration_seconds": 142}
+      {"event": "dag_failure",          "dag_id": "mlops_daily_training", "task_id": "train_model", "error": "..."}
+      {"event": "task_retry",           "dag_id": "mlops_daily_training", "task_id": "train_model", "try_number": 2}
+      {"event": "data_validation_failure", "dag_id": "mlops_daily_training"}
     """
-    data  = request.get_json(force=True, silent=True) or {}
-    event = data.get("event", "")
-    if event == "data_validation_failure":
+    data    = request.get_json(force=True, silent=True) or {}
+    event   = data.get("event", "")
+    dag_id  = data.get("dag_id", "unknown")
+
+    if event == "dag_success":
+        dag_runs.labels(dag_id=dag_id, status="success").inc()
+        duration = float(data.get("duration_seconds", 0))
+        if duration:
+            dag_run_duration.labels(dag_id=dag_id).set(duration)
+
+    elif event == "dag_failure":
+        dag_runs.labels(dag_id=dag_id, status="failure").inc()
+
+    elif event == "task_retry":
+        dag_runs.labels(dag_id=dag_id, status="retry").inc()
+
+    elif event == "data_validation_failure":
         dag_data_validation_failures.inc()
-    return jsonify({"status": "recorded", "event": event}), 200
+        dag_runs.labels(dag_id=dag_id, status="failure").inc()
+
+    return jsonify({"status": "recorded", "event": event, "dag_id": dag_id}), 200
 
 
 @app.route("/retrain", methods=["POST"])
