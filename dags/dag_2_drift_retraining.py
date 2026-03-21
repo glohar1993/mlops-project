@@ -32,6 +32,7 @@ from feature_registry import (
     apply_label_map, encode_operation_mode,
     PSI_CRITICAL, MIN_ACCURACY_GAIN
 )
+from dag_notifications import on_success, on_failure, on_retry
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator, BranchPythonOperator
@@ -54,6 +55,7 @@ default_args = {
     "retries":          1,
     "retry_delay":      timedelta(minutes=3),
     "execution_timeout": timedelta(minutes=45),
+    "on_retry_callback": on_retry,
 }
 
 dag = DAG(
@@ -65,6 +67,8 @@ dag = DAG(
     max_active_runs=1,
     default_args=default_args,
     tags=["mlops", "drift", "retraining"],
+    on_success_callback=on_success,
+    on_failure_callback=on_failure,
     # DAG params — passed when triggered via API
     params={
         "drift_score": 0.0,

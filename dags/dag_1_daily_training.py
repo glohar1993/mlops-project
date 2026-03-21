@@ -35,6 +35,7 @@ from feature_registry import (
     FEATURE_COLUMNS, TARGET_COLUMN, LABEL_MAP,
     apply_label_map, encode_operation_mode, MIN_ACCURACY
 )
+from dag_notifications import on_success, on_failure, on_retry
 
 # ── Config ────────────────────────────────────────────────────
 MLFLOW_URI        = os.getenv("MLFLOW_TRACKING_URI", "http://3.15.231.90:5000")
@@ -51,6 +52,7 @@ default_args = {
     "retries":          2,
     "retry_delay":      timedelta(minutes=5),
     "execution_timeout": timedelta(minutes=30),
+    "on_retry_callback": on_retry,
 }
 
 # ── DAG definition ────────────────────────────────────────────
@@ -63,6 +65,8 @@ dag = DAG(
     max_active_runs=1,                       # Never run two at the same time
     default_args=default_args,
     tags=["mlops", "training", "daily"],
+    on_success_callback=on_success,
+    on_failure_callback=on_failure,
 )
 
 
