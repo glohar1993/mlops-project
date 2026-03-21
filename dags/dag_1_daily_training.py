@@ -98,6 +98,22 @@ def validate_data(**context):
         errors.append(f"Too few rows: {len(df)} (min 100)")
 
     if errors:
+        # Notify Flask so ml_dag_data_validation_failures_total is incremented
+        try:
+            import urllib.request as _ur, json as _json  # noqa: PLC0415
+            _payload = _json.dumps({
+                "event":  "data_validation_failure",
+                "dag_id": "mlops_daily_training",
+                "detail": errors[:3],
+            }).encode()
+            _req = _ur.Request(
+                f"{FLASK_URL}/dag-event",
+                data=_payload,
+                headers={"Content-Type": "application/json"},
+            )
+            _ur.urlopen(_req, timeout=5)
+        except Exception as _e:
+            print(f"[Notify] Flask /dag-event unreachable (non-fatal): {_e}")
         raise ValueError(f"Data validation FAILED:\n" + "\n".join(errors))
 
     print(f"Data validation PASSED — {len(df)} rows, {len(df.columns)} cols")

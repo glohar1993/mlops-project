@@ -93,6 +93,19 @@ prediction_confidence_avg = Gauge(
 ab_test_requests = Counter(
     'ml_ab_test_requests_total', 'A/B test request count per model variant', ['model'])
 
+# DAG pipeline health counters
+dag_data_validation_failures = Counter(
+    'ml_dag_data_validation_failures_total',
+    'Number of times Airflow DAG data validation step failed')
+
+# Security / audit counters
+audit_log_failures = Counter(
+    'ml_audit_log_failures_total',
+    'Number of times prediction audit log write failed')
+
+# Audit log path — write one line per prediction for security/compliance trail
+_AUDIT_LOG_PATH = os.getenv("AUDIT_LOG_PATH", "/app/artifacts/audit.log")
+
 # Rolling confidence accumulator (thread-safe)
 _confidence_sum   = 0.0
 _confidence_count = 0
@@ -322,6 +335,17 @@ def predict_api():
             if _confidence_count > 0:
                 prediction_confidence_avg.set(_confidence_sum / _confidence_count)
 
+        # Audit log — one line per prediction for compliance trail
+        try:
+            with open(_AUDIT_LOG_PATH, "a") as _f:
+                _f.write(
+                    f"{datetime.utcnow().isoformat()}Z "
+                    f"label={label} confidence={confidence:.4f} "
+                    f"model_v={_current_model_version}\n"
+                )
+        except Exception:
+            audit_log_failures.inc()
+
         # A/B test tracking — default model variant is "primary"
         ab_model = request.headers.get("X-Model-Variant", "primary")
         ab_test_requests.labels(model=ab_model).inc()
@@ -388,6 +412,21 @@ def record_dag_duration():
     duration = float(data.get("duration_seconds", 0))
     dag_run_duration.labels(dag_id=dag_id).set(duration)
     return jsonify({"status": "recorded", "dag_id": dag_id, "duration_seconds": duration}), 200
+
+
+@app.route("/dag-event", methods=["POST"])
+def record_dag_event():
+    """
+    Receive pipeline events from Airflow DAGs.
+
+    Request JSON: {"event": "data_validation_failure", "dag_id": "...", "detail": "..."}
+    Supported events: data_validation_failure
+    """
+    data  = request.get_json(force=True, silent=True) or {}
+    event = data.get("event", "")
+    if event == "data_validation_failure":
+        dag_data_validation_failures.inc()
+    return jsonify({"status": "recorded", "event": event}), 200
 
 
 @app.route("/retrain", methods=["POST"])
