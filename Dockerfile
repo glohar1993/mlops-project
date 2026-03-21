@@ -28,8 +28,10 @@ COPY . /app
 # Install project as package (--no-deps avoids numpy downgrade from setup.py)
 RUN pip install --no-cache-dir --no-deps -e .
 
-# Set ownership
-RUN chown -R mlops:mlops /app
+# Create runtime directories (drift state, Slack config, Prometheus multiproc)
+RUN mkdir -p /app/artifacts/drift /app/artifacts/processed /app/artifacts/models \
+             /app/config /tmp/prometheus_multiproc && \
+    chown -R mlops:mlops /app /tmp/prometheus_multiproc
 
 USER mlops
 
