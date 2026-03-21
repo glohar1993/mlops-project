@@ -76,6 +76,28 @@ retraining_success = Gauge(
 model_accuracy = Gauge(
     'ml_model_accuracy', 'Current model accuracy on test set')
 
+# ── Extended observability metrics ──────────────────────────────────── #
+# Per-feature PSI for all 14 features (Population Stability Index)
+feature_psi_gauge = Gauge(
+    'ml_feature_psi', 'PSI drift score per feature', ['feature_name'])
+
+# DAG pipeline run duration (seconds) per dag_id
+dag_run_duration = Gauge(
+    'ml_dag_run_duration_seconds', 'Duration of DAG pipeline runs in seconds', ['dag_id'])
+
+# Average prediction confidence (max probability across classes)
+prediction_confidence_avg = Gauge(
+    'ml_prediction_confidence_avg', 'Rolling average prediction confidence (max proba)')
+
+# A/B test traffic split counter per model variant
+ab_test_requests = Counter(
+    'ml_ab_test_requests_total', 'A/B test request count per model variant', ['model'])
+
+# Rolling confidence accumulator (thread-safe)
+_confidence_sum   = 0.0
+_confidence_count = 0
+_confidence_lock  = threading.Lock()
+
 # ================================================================== #
 #  Configuration
 # ================================================================== #
@@ -291,6 +313,19 @@ def predict_api():
         drift_detector.record(input_data, int(pred))
         prediction_counter.labels(result=label).inc()
 
+        # Track prediction confidence (max probability)
+        confidence = float(max(proba))
+        global _confidence_sum, _confidence_count
+        with _confidence_lock:
+            _confidence_sum   += confidence
+            _confidence_count += 1
+            if _confidence_count > 0:
+                prediction_confidence_avg.set(_confidence_sum / _confidence_count)
+
+        # A/B test tracking — default model variant is "primary"
+        ab_model = request.headers.get("X-Model-Variant", "primary")
+        ab_test_requests.labels(model=ab_model).inc()
+
         return jsonify({
             "prediction":    label,
             "class_id":      int(pred),
@@ -322,7 +357,37 @@ def health():
 def drift_status_endpoint():
     """Real-time drift status — used by CronJob and Airflow DAG."""
     result = drift_detector.check_drift()
+
+    # Update per-feature PSI gauges from feature_drift_scores dict (if present)
+    feature_scores = result.get("feature_drift_scores", {})
+    if isinstance(feature_scores, dict) and feature_scores:
+        # Use per-feature breakdown when available
+        for feat, psi_val in feature_scores.items():
+            try:
+                feature_psi_gauge.labels(feature_name=feat).set(float(psi_val))
+            except Exception:
+                pass
+    else:
+        # Fallback: distribute overall feature_drift_score across all 14 features
+        overall_psi = result.get("feature_drift_score", 0.0)
+        for feat in FEATURES:
+            feature_psi_gauge.labels(feature_name=feat).set(float(overall_psi))
+
     return jsonify(result), 200
+
+
+@app.route("/dag-duration", methods=["POST"])
+def record_dag_duration():
+    """
+    Receive DAG run completion metrics from Airflow (called by DAG callback).
+
+    Request JSON: {"dag_id": "dag_1_daily_training", "duration_seconds": 142.5}
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    dag_id  = data.get("dag_id",  "unknown")
+    duration = float(data.get("duration_seconds", 0))
+    dag_run_duration.labels(dag_id=dag_id).set(duration)
+    return jsonify({"status": "recorded", "dag_id": dag_id, "duration_seconds": duration}), 200
 
 
 @app.route("/retrain", methods=["POST"])
@@ -444,6 +509,98 @@ def explain_prediction():
         return jsonify({"error": f"Missing required feature: {e}"}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# ================================================================== #
+#  Slack OAuth Integration — one-click install flow
+# ================================================================== #
+SLACK_CLIENT_ID     = os.getenv("SLACK_CLIENT_ID",     "10745071510533.10746441215142")
+SLACK_CLIENT_SECRET = os.getenv("SLACK_CLIENT_SECRET", "7ae986c2a7472bd2df921dda1290b337")
+SLACK_REDIRECT_URI  = os.getenv("SLACK_REDIRECT_URI",  "http://18.189.188.181:30080/slack/callback")
+_SLACK_WEBHOOK_FILE = "/app/config/slack_webhook_url.txt"
+
+
+@app.route("/slack/install")
+def slack_install():
+    """Redirect to Slack OAuth authorization page."""
+    oauth_url = (
+        "https://slack.com/oauth/v2/authorize"
+        f"?client_id={SLACK_CLIENT_ID}"
+        "&scope=incoming-webhook,chat:write"
+        f"&redirect_uri={SLACK_REDIRECT_URI}"
+    )
+    from flask import redirect as flask_redirect
+    return flask_redirect(oauth_url)
+
+
+@app.route("/slack/callback")
+def slack_callback():
+    """Handle Slack OAuth callback — exchange code for webhook URL."""
+    import urllib.request, urllib.parse
+    code  = request.args.get("code")
+    error = request.args.get("error")
+
+    if error:
+        return f"<h2>Slack OAuth error: {error}</h2>", 400
+    if not code:
+        return "<h2>No code returned from Slack</h2>", 400
+
+    # Exchange code for access token
+    payload = urllib.parse.urlencode({
+        "client_id":     SLACK_CLIENT_ID,
+        "client_secret": SLACK_CLIENT_SECRET,
+        "code":          code,
+        "redirect_uri":  SLACK_REDIRECT_URI,
+    }).encode()
+
+    req = urllib.request.Request(
+        "https://slack.com/api/oauth.v2.access",
+        data=payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    with urllib.request.urlopen(req) as resp:
+        import json as _json
+        result = _json.loads(resp.read().decode())
+
+    if not result.get("ok"):
+        return f"<h2>OAuth failed: {result.get('error')}</h2>", 400
+
+    webhook_url = (
+        result.get("incoming_webhook", {}).get("url") or ""
+    )
+    channel = result.get("incoming_webhook", {}).get("channel", "unknown")
+    team    = result.get("team", {}).get("name", "unknown")
+
+    # Persist the webhook URL to a local file
+    os.makedirs(os.path.dirname(_SLACK_WEBHOOK_FILE), exist_ok=True)
+    with open(_SLACK_WEBHOOK_FILE, "w") as f:
+        f.write(webhook_url)
+
+    html = f"""<!DOCTYPE html>
+<html><head><title>Slack Connected</title>
+<style>body{{font-family:monospace;padding:40px;background:#0d1117;color:#58d68d}}
+pre{{background:#1c1c1c;padding:20px;border-radius:8px;color:#f8f8f2;word-break:break-all}}</style>
+</head><body>
+<h1>Slack Connected!</h1>
+<p>Workspace: <b>{team}</b> | Channel: <b>{channel}</b></p>
+<h3>Webhook URL (paste into AlertManager ConfigMap):</h3>
+<pre>{webhook_url}</pre>
+<p>Now run:<br>
+<code>kubectl patch configmap alertmanager-config -n default --type merge -p '
+{{"data":{{"alertmanager.yml":"(replace slack_api_url with the URL above)"}}}}'</code></p>
+</body></html>"""
+    return html, 200
+
+
+@app.route("/slack/webhook-url")
+def slack_webhook_url():
+    """Return the stored Slack webhook URL (for automated ConfigMap patching)."""
+    try:
+        with open(_SLACK_WEBHOOK_FILE) as f:
+            url = f.read().strip()
+        return jsonify({"webhook_url": url, "configured": bool(url)}), 200
+    except FileNotFoundError:
+        return jsonify({"webhook_url": None, "configured": False}), 200
 
 
 if __name__ == "__main__":
