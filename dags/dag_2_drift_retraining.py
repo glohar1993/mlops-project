@@ -24,16 +24,8 @@ from datetime import datetime, timedelta
 import os
 import sys
 import json
-import requests
-import pandas as pd
-import mlflow
-import mlflow.sklearn
-from sklearn.linear_model import LogisticRegression
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
 
-# Single source of truth for all feature/label definitions
+# feature_registry is pure Python (no ML deps) — safe to import at module level
 sys.path.insert(0, "/opt/airflow/dags")
 from feature_registry import (
     FEATURE_COLUMNS, TARGET_COLUMN, LABEL_MAP,
@@ -88,6 +80,7 @@ def check_drift_severity(**context):
     because the Flask background thread retrains every 30s and resets the score.
     The DAG is triggered by the drift detector *at the moment* drift is CRITICAL,
     so the conf params are the authoritative record of the drift state."""
+    import requests  # noqa: PLC0415 — lazy import: not in airflow base image
     conf   = context["dag_run"].conf or {}
     score  = float(conf.get("drift_score",  conf.get("driftScore",  0.0)))
     status = str(conf.get("drift_status",   conf.get("driftStatus", "OK")))
@@ -116,7 +109,8 @@ def check_drift_severity(**context):
 # ── Task 2: Backup Current Model ─────────────────────────────
 def backup_current_model(**context):
     """Save current model to S3 before replacing it."""
-    import boto3, pickle, datetime as dt
+    import boto3, pickle, datetime as dt  # noqa: PLC0415
+    import mlflow  # noqa: PLC0415
 
     mlflow.set_tracking_uri(MLFLOW_URI)
     client = mlflow.tracking.MlflowClient()
@@ -144,6 +138,13 @@ def backup_current_model(**context):
 # ── Task 3: Retrain on Fresh Data ─────────────────────────────
 def retrain_model(**context):
     """Retrain with latest data. Log to MLflow."""
+    import pandas as pd  # noqa: PLC0415
+    import mlflow  # noqa: PLC0415
+    import mlflow.sklearn  # noqa: PLC0415
+    from sklearn.linear_model import LogisticRegression  # noqa: PLC0415
+    from sklearn.preprocessing import StandardScaler  # noqa: PLC0415
+    from sklearn.model_selection import train_test_split  # noqa: PLC0415
+    from sklearn.metrics import accuracy_score  # noqa: PLC0415
     drift_score = context["ti"].xcom_pull(
         task_ids="check_drift_severity", key="drift_score"
     )
@@ -204,6 +205,7 @@ def retrain_model(**context):
 # ── Task 4: Compare New vs Baseline ───────────────────────────
 def compare_models(**context):
     """Compare new model accuracy vs current production model."""
+    import mlflow  # noqa: PLC0415
     new_accuracy  = context["ti"].xcom_pull(task_ids="retrain_model", key="new_accuracy")
     baseline_run  = context["ti"].xcom_pull(task_ids="backup_current_model", key="baseline_run_id")
 
@@ -238,6 +240,7 @@ def branch_promote_or_rollback(**context):
 # ── Task 6a: Promote New Model ────────────────────────────────
 def promote_new_model(**context):
     """Register new model as Production in MLflow."""
+    import mlflow  # noqa: PLC0415
     new_run_id = context["ti"].xcom_pull(task_ids="retrain_model", key="new_run_id")
     mlflow.set_tracking_uri(MLFLOW_URI)
 

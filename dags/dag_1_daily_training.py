@@ -28,15 +28,8 @@ from airflow.utils.trigger_rule import TriggerRule
 
 import os
 import sys
-import pandas as pd
-import mlflow
-import mlflow.sklearn
-from sklearn.linear_model import LogisticRegression
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, f1_score
 
-# Single source of truth for all feature/label definitions
+# feature_registry is pure Python (no ML deps) — safe to import at module level
 sys.path.insert(0, "/opt/airflow/dags")
 from feature_registry import (
     FEATURE_COLUMNS, TARGET_COLUMN, LABEL_MAP,
@@ -76,6 +69,7 @@ dag = DAG(
 # ── Task 1: Validate Data ─────────────────────────────────────
 def validate_data(**context):
     """Check data quality before training."""
+    import pandas as pd  # noqa: PLC0415 — lazy import: not in airflow base image
     print(f"Loading data from {DATA_PATH}")
     df = pd.read_csv(DATA_PATH)
 
@@ -117,6 +111,9 @@ def validate_data(**context):
 # ── Task 2: Preprocess ────────────────────────────────────────
 def preprocess_data(**context):
     """Feature engineering and train/test split."""
+    import pandas as pd  # noqa: PLC0415
+    from sklearn.model_selection import train_test_split  # noqa: PLC0415
+    from sklearn.preprocessing import StandardScaler  # noqa: PLC0415
     data_path = context["ti"].xcom_pull(task_ids="validate_data", key="data_path")
     df = pd.read_csv(data_path)
 
@@ -149,6 +146,10 @@ def preprocess_data(**context):
 # ── Task 3: Train Model ───────────────────────────────────────
 def train_model(**context):
     """Train Logistic Regression and log to MLflow."""
+    import pandas as pd  # noqa: PLC0415
+    import mlflow  # noqa: PLC0415
+    import mlflow.sklearn  # noqa: PLC0415
+    from sklearn.linear_model import LogisticRegression  # noqa: PLC0415
     processed_dir = context["ti"].xcom_pull(
         task_ids="preprocess_data", key="processed_dir"
     )
@@ -177,6 +178,10 @@ def train_model(**context):
 # ── Task 4: Evaluate Model ────────────────────────────────────
 def evaluate_model(**context):
     """Evaluate model and decide whether to promote."""
+    import pandas as pd  # noqa: PLC0415
+    import mlflow  # noqa: PLC0415
+    import mlflow.sklearn  # noqa: PLC0415
+    from sklearn.metrics import accuracy_score, f1_score  # noqa: PLC0415
     processed_dir = context["ti"].xcom_pull(
         task_ids="train_model", key="processed_dir"
     )
@@ -220,6 +225,7 @@ def branch_on_accuracy(**context):
 # ── Task 6: Register Model in MLflow Registry ─────────────────
 def register_model(**context):
     """Register model in MLflow Model Registry."""
+    import mlflow  # noqa: PLC0415
     run_id = context["ti"].xcom_pull(task_ids="evaluate_model", key="run_id")
     mlflow.set_tracking_uri(MLFLOW_URI)
 
