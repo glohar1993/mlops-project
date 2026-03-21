@@ -23,22 +23,44 @@ import json
 from datetime import datetime, timezone
 
 
+# AlertManager internal URL — reachable from any pod in the cluster.
+# AlertManager forwards alerts to Slack via the configured webhook.
+# Fallback: direct Slack webhook if set in SLACK_WEBHOOK_URL env var.
+_ALERTMANAGER_URL = os.getenv(
+    "ALERTMANAGER_URL",
+    "http://alertmanager-service.default.svc.cluster.local:9093",
+)
 SLACK_WEBHOOK = os.getenv("SLACK_WEBHOOK_URL", "")
 
 
-def _send(payload: dict) -> None:
-    """POST JSON payload to Slack webhook. Silently swallows errors so DAG never
-    fails because of a notification issue."""
+def _post_alert(alertname: str, severity: str, summary: str, description: str) -> None:
+    """Send an alert to AlertManager (internal cluster URL).
+    AlertManager forwards it to Slack via the configured webhook.
+    Silently swallows errors so DAGs never fail due to notification issues."""
     try:
+        from datetime import timezone
+        payload = [{
+            "labels": {
+                "alertname": alertname,
+                "severity": severity,
+                "service":  "airflow",
+                "source":   "dag-callback",
+            },
+            "annotations": {
+                "summary":     summary,
+                "description": description,
+            },
+            "startsAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }]
         data = json.dumps(payload).encode()
         req = urllib.request.Request(
-            SLACK_WEBHOOK,
+            f"{_ALERTMANAGER_URL}/api/v2/alerts",
             data=data,
             headers={"Content-Type": "application/json"},
         )
         urllib.request.urlopen(req, timeout=10)
     except Exception as exc:
-        print(f"[Slack] Notification failed (non-fatal): {exc}")
+        print(f"[Notify] AlertManager unreachable (non-fatal): {exc}")
 
 
 def _duration(context) -> str:
@@ -60,28 +82,15 @@ def on_success(context):
     dag_id   = context["dag"].dag_id
     run_id   = context["dag_run"].run_id
     duration = _duration(context)
-
-    _send({
-        "blocks": [
-            {
-                "type": "header",
-                "text": {"type": "plain_text", "text": f"✅ DAG Succeeded: {dag_id}"}
-            },
-            {
-                "type": "section",
-                "fields": [
-                    {"type": "mrkdwn", "text": f"*DAG:*\n`{dag_id}`"},
-                    {"type": "mrkdwn", "text": f"*Status:*\n✅ SUCCESS"},
-                    {"type": "mrkdwn", "text": f"*Duration:*\n{duration}"},
-                    {"type": "mrkdwn", "text": f"*Run ID:*\n`{run_id[:40]}`"},
-                ]
-            },
-            {
-                "type": "context",
-                "elements": [{"type": "mrkdwn", "text": f"Completed at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"}]
-            }
-        ]
-    })
+    _post_alert(
+        alertname=f"DagSucceeded",
+        severity="info",
+        summary=f"DAG succeeded: {dag_id} ({duration})",
+        description=(
+            f"DAG `{dag_id}` completed successfully in {duration}. "
+            f"Run: `{run_id[:60]}`"
+        ),
+    )
 
 
 def on_failure(context):
@@ -91,59 +100,30 @@ def on_failure(context):
     task_id   = context.get("task_instance", context.get("ti")).task_id
     exception = str(context.get("exception", "Unknown error"))[:200]
     duration  = _duration(context)
-
-    _send({
-        "blocks": [
-            {
-                "type": "header",
-                "text": {"type": "plain_text", "text": f"🚨 DAG FAILED: {dag_id}"}
-            },
-            {
-                "type": "section",
-                "fields": [
-                    {"type": "mrkdwn", "text": f"*DAG:*\n`{dag_id}`"},
-                    {"type": "mrkdwn", "text": f"*Status:*\n❌ FAILED"},
-                    {"type": "mrkdwn", "text": f"*Failed Task:*\n`{task_id}`"},
-                    {"type": "mrkdwn", "text": f"*Duration:*\n{duration}"},
-                ]
-            },
-            {
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": f"*Error:*\n```{exception}```"}
-            },
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"*Run ID:* `{run_id[:60]}`"
-                }
-            },
-            {
-                "type": "context",
-                "elements": [{"type": "mrkdwn", "text": f"Failed at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} | Check Airflow UI for logs"}]
-            }
-        ]
-    })
+    _post_alert(
+        alertname="DagFailed",
+        severity="critical",
+        summary=f"DAG FAILED: {dag_id} — task `{task_id}` ({duration})",
+        description=(
+            f"DAG `{dag_id}` failed at task `{task_id}` after {duration}. "
+            f"Error: {exception}. "
+            f"Run: `{run_id[:60]}`"
+        ),
+    )
 
 
 def on_retry(context):
     """Called when a task is retried."""
-    dag_id   = context["dag"].dag_id
-    task_id  = context.get("task_instance", context.get("ti")).task_id
-    try_num  = context.get("task_instance", context.get("ti")).try_number
+    dag_id    = context["dag"].dag_id
+    task_id   = context.get("task_instance", context.get("ti")).task_id
+    try_num   = context.get("task_instance", context.get("ti")).try_number
     exception = str(context.get("exception", "Unknown error"))[:150]
-
-    _send({
-        "blocks": [
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": (
-                        f":warning: *DAG Retry* | `{dag_id}` › `{task_id}`\n"
-                        f"Attempt #{try_num} | Error: `{exception}`"
-                    )
-                }
-            }
-        ]
-    })
+    _post_alert(
+        alertname="DagTaskRetry",
+        severity="warning",
+        summary=f"DAG retry: {dag_id} › {task_id} (attempt #{try_num})",
+        description=(
+            f"Task `{task_id}` in DAG `{dag_id}` is retrying (attempt #{try_num}). "
+            f"Error: {exception}"
+        ),
+    )
