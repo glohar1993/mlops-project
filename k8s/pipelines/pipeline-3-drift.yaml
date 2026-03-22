@@ -25,7 +25,7 @@ metadata:
     component: observability
 spec:
   schedule: "*/30 * * * *"   # Run every 30 min (not every 2 min — too aggressive for t3.medium)
-  suspend: false              # ACTIVE: drift-pipeline image built and pushed to ECR
+  suspend: true               # Suspended: ECR image missing drift_pipeline.py entrypoint; re-enable after image rebuild
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit:     3

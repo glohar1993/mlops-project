@@ -14,6 +14,7 @@ metadata:
     app: ab-testing
 spec:
   schedule: "*/30 * * * *"   # every 30 minutes
+  suspend: true               # Suspended: A/B deployments at 0 replicas; activate when running A/B test
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 5
   failedJobsHistoryLimit: 3
