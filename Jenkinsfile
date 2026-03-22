@@ -94,9 +94,14 @@ pipeline {
 
                         # Restore all git-tracked artifacts that DVC removes during pull/repro
                         # (DVC treats these as outputs and deletes them before attempting cache pull)
-                        git checkout HEAD -- artifacts/raw/data.csv \
+                        git checkout HEAD -- \
+                            artifacts/raw/data.csv \
                             artifacts/models/model.pkl \
-                            artifacts/processed/scaler.pkl 2>/dev/null || true
+                            artifacts/processed/scaler.pkl \
+                            artifacts/processed/X_train.pkl \
+                            artifacts/processed/X_test.pkl \
+                            artifacts/processed/y_train.pkl \
+                            artifacts/processed/y_test.pkl 2>/dev/null || true
                     """
                 }
             }
