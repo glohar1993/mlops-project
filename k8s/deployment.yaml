@@ -71,7 +71,7 @@ spec:
 
       containers:
         - name: flask-container
-          image: 824033490704.dkr.ecr.us-east-2.amazonaws.com/mlops-flask-app:latest
+          image: 824033490704.dkr.ecr.us-east-2.amazonaws.com/mlops-flask-app:7ebccc7
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

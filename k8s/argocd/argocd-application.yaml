@@ -60,3 +60,4 @@ spec:
       kind: Deployment
       jsonPointers:
         - /spec/replicas   # HPA controls replicas — ignore diff
+        - /spec/template/spec/containers/0/image   # Jenkins updates image via git; avoid race

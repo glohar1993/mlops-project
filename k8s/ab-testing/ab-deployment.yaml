@@ -17,7 +17,7 @@ metadata:
     variant: model-a
     version: "2"
 spec:
-  replicas: 4          # 80% of traffic (4 pods)
+  replicas: 1          # 1 pod each for A/B on t3.medium cluster (80/20 split via weighted service)
   selector:
     matchLabels:
       app: flask-app
