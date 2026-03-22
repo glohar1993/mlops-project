@@ -380,18 +380,24 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
         stage('Deploy → Production') {
             when { branch 'main' }
             steps {
-                sh """
-                    # Patch the image tag in k8s/deployment.yaml (ArgoCD watches this file)
-                    sed -i "s|image: ${ECR_REGISTRY}/mlops-flask-app:.*|image: ${ECR_REGISTRY}/mlops-flask-app:\${GIT_COMMIT_SHORT}|g" \
-                        k8s/deployment.yaml
+                withCredentials([usernamePassword(credentialsId: 'github-token-git',
+                                                  usernameVariable: 'GIT_USER',
+                                                  passwordVariable: 'GIT_TOKEN')]) {
+                    sh """
+                        # Patch the image tag in k8s/deployment.yaml (ArgoCD watches this file)
+                        sed -i "s|image: ${ECR_REGISTRY}/mlops-flask-app:.*|image: ${ECR_REGISTRY}/mlops-flask-app:\${GIT_COMMIT_SHORT}|g" \
+                            k8s/deployment.yaml
 
-                    # Commit the image tag update so ArgoCD detects the change
-                    git config user.email "jenkins@mlops-ci.local"
-                    git config user.name "Jenkins CI"
-                    git add k8s/deployment.yaml
-                    git commit -m "ci: promote mlops-flask-app:\${GIT_COMMIT_SHORT} to production [skip ci]"
-                    git push origin HEAD:main
-                """
+                        # Commit the image tag update so ArgoCD detects the change
+                        git config user.email "jenkins@mlops-ci.local"
+                        git config user.name "Jenkins CI"
+                        git remote set-url origin "https://\${GIT_USER}:\${GIT_TOKEN}@github.com/glohar1993/mlops-project.git"
+                        git add k8s/deployment.yaml
+                        git diff --cached --quiet && echo "No changes to deployment.yaml" || \\
+                            git commit -m "ci: promote mlops-flask-app:\${GIT_COMMIT_SHORT} to production [skip ci]"
+                        git push origin HEAD:main
+                    """
+                }
 
                 sh """
                     # Install argocd CLI to user-writable location
