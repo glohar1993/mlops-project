@@ -17,7 +17,7 @@ metadata:
     variant: model-a
     version: "2"
 spec:
-  replicas: 1          # 1 pod each for A/B on t3.medium cluster (80/20 split via weighted service)
+  replicas: 0          # Disabled by default; set to 1 and push when A/B test is active
   selector:
     matchLabels:
       app: flask-app
@@ -81,7 +81,7 @@ metadata:
     variant: model-b
     version: "3"
 spec:
-  replicas: 1          # 20% of traffic (1 pod)
+  replicas: 0          # Disabled by default; set to 1 and push when A/B test is active
   selector:
     matchLabels:
       app: flask-app
