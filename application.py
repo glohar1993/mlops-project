@@ -1,3 +1,4 @@
+# Production MLOps Platform — Equipment Efficiency Predictor — v1.0
 """
 MLOps Production Serving Application
 =====================================
@@ -7,6 +8,8 @@ Enterprise-grade Flask app with:
   - Full Prometheus observability
   - Drift monitored by K8s CronJob (not background thread)
 """
+
+APP_VERSION = "1.0.1"  # bumped to trigger CI/CD end-to-end test
 
 from flask import Flask, render_template, request, jsonify, Response
 import joblib
