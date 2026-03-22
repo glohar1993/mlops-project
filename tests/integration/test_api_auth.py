@@ -1,9 +1,9 @@
 """
-Integration Tests — API Authentication & Authorization
-========================================================
-Tests the /predict, /retrain, /drift, /health endpoints
-with all permutations of auth: no auth, valid key, invalid key,
-wrong role, JWT token, expired JWT, viewer/operator/admin roles.
+Integration Tests — API Endpoint Correctness
+=============================================
+Tests /predict, /drift, /health endpoints with valid and invalid
+payloads. Auth is enforced at the ALB/Cognito layer, not in Flask —
+JWT/API-key auth tests are removed.
 """
 
 import sys
@@ -114,22 +114,6 @@ class TestPredictAuth:
                    "Content-Type": "application/json"}
         rv = client.post("/predict", data=json.dumps(valid_payload), headers=headers)
         assert rv.status_code in (200, 401)  # depends on auth enforcement
-
-    def test_predict_jwt_token(self, client, valid_payload):
-        from src.auth import generate_token
-        token   = generate_token("test-svc", "operator")
-        headers = {"Authorization": f"Bearer {token}",
-                   "Content-Type": "application/json"}
-        rv = client.post("/predict", data=json.dumps(valid_payload), headers=headers)
-        assert rv.status_code in (200, 401)
-
-    def test_predict_expired_jwt_returns_401(self, client, valid_payload):
-        from src.auth import generate_token
-        token   = generate_token("test-svc", "operator", expiry=-1)
-        headers = {"Authorization": f"Bearer {token}",
-                   "Content-Type": "application/json"}
-        rv = client.post("/predict", data=json.dumps(valid_payload), headers=headers)
-        assert rv.status_code in (200, 401)
 
 
 # ════════════════════════════════════════════════════════════════

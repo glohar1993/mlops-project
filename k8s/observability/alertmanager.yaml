@@ -57,10 +57,10 @@ data:
           repeat_interval: 5m
           continue: false
 
-        # P0/P1 Critical — immediate page, loud, short repeat
+        # P0/P1 Critical — immediate page via PagerDuty + Slack
         - matchers:
             - severity = "critical"
-          receiver: 'slack-critical'
+          receiver: 'critical-pagerduty-slack'
           group_wait: 10s
           group_interval: 1m
           repeat_interval: 15m
@@ -84,6 +84,48 @@ data:
 
     # ── Receivers ─────────────────────────────────────────────────
     receivers:
+      # P0/P1 Critical — PagerDuty page + Slack notification (dual fanout)
+      - name: 'critical-pagerduty-slack'
+        pagerduty_configs:
+          - routing_key: '${PAGERDUTY_ROUTING_KEY}'
+            severity: 'critical'
+            client: 'MLOps AlertManager'
+            client_url: 'http://18.189.188.181:30093'
+            description: '{{ .CommonLabels.alertname }} — {{ .CommonAnnotations.summary }}'
+            details:
+              alertname: '{{ .CommonLabels.alertname }}'
+              layer: '{{ .CommonLabels.layer }}'
+              description: '{{ .CommonAnnotations.description }}'
+              runbook_url: '{{ .CommonAnnotations.runbook_url }}'
+        slack_configs:
+          - api_url: '${SLACK_WEBHOOK_URL}'
+            channel: '#all-mlops'
+            send_resolved: true
+            icon_emoji: ':rotating_light:'
+            username: 'MLOps CRITICAL'
+            color: '{{ if eq .Status "firing" }}danger{{ else }}good{{ end }}'
+            title: '{{ if eq .Status "firing" }}🚨 CRITICAL{{ else }}✅ RESOLVED{{ end }} — {{ .CommonLabels.alertname }}'
+            title_link: 'http://18.189.188.181:30090/alerts'
+            text: |
+              {{ range .Alerts }}
+              *Alert:* {{ .Labels.alertname }}
+              *Summary:* {{ .Annotations.summary }}
+              *Details:* {{ .Annotations.description }}
+              *Layer:* {{ .Labels.layer }}
+              *Started:* {{ .StartsAt.Format "2006-01-02 15:04 UTC" }}
+              {{ if .Annotations.runbook_url }}*Runbook:* {{ .Annotations.runbook_url }}{{ end }}
+              {{ end }}
+            actions:
+              - type: button
+                text: 'Grafana Dashboard'
+                url: 'http://18.189.188.181:30030'
+              - type: button
+                text: 'Prometheus Alerts'
+                url: 'http://18.189.188.181:30090/alerts'
+              - type: button
+                text: 'Airflow UI'
+                url: 'http://a86b97ed8436c4b9896b7dd139d26693-2143784381.us-east-2.elb.amazonaws.com:8080'
+
       # P0/P1 Critical — rotating_light, instant, every 15m until resolved
       - name: 'slack-critical'
         slack_configs:
@@ -141,7 +183,7 @@ data:
             icon_emoji: ':dog:'
             username: 'Watchdog'
             title: '🐕 Prometheus heartbeat — monitoring alive'
-            text: 'All systems operational. {{ now | date "2006-01-02 15:04 UTC" }}'
+            text: 'All systems operational. {{ .CommonAnnotations.description }}'
 
       # Info — DAG success, low-urgency events
       - name: 'slack-info'
@@ -181,17 +223,23 @@ spec:
             - sh
             - -c
             - |
-              # envsubst substitutes only listed vars — safe with other ${} in template
-              sed "s|\${SLACK_WEBHOOK_URL}|${SLACK_WEBHOOK_URL}|g" \
+              # Substitute both SLACK_WEBHOOK_URL and PAGERDUTY_ROUTING_KEY
+              sed -e "s|\${SLACK_WEBHOOK_URL}|${SLACK_WEBHOOK_URL}|g" \
+                  -e "s|\${PAGERDUTY_ROUTING_KEY}|${PAGERDUTY_ROUTING_KEY}|g" \
                 /tmpl/alertmanager.yml.tmpl > /etc/alertmanager/alertmanager.yml
               echo "[config-gen] Rendered AlertManager config:"
-              grep -E "channel:|receiver:|api_url:|severity" /etc/alertmanager/alertmanager.yml
+              grep -E "channel:|receiver:|api_url:|routing_key:|severity" /etc/alertmanager/alertmanager.yml
           env:
             - name: SLACK_WEBHOOK_URL
               valueFrom:
                 secretKeyRef:
                   name: mlops-secrets
                   key: SLACK_WEBHOOK_URL
+            - name: PAGERDUTY_ROUTING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mlops-secrets
+                  key: PAGERDUTY_ROUTING_KEY
           volumeMounts:
             - name: config-template
               mountPath: /tmpl

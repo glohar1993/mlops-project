@@ -1,0 +1,28 @@
+# ============================================================
+# DVC Pipeline Parameters — single source of truth
+# All stage commands read from this file via dvc params
+# ============================================================
+
+data:
+  s3_bucket: mlops-artifacts-prod-824033490704
+  s3_key: raw/data.csv
+  raw_output_path: artifacts/raw/data.csv
+
+preprocessing:
+  test_size: 0.2
+  random_state: 42
+  scale_features: true
+
+training:
+  model_type: LogisticRegression
+  max_iter: 1000
+  C: 1.0
+  solver: lbfgs
+  mlflow_experiment: mlops-efficiency-predictor
+
+evaluation:
+  accuracy_threshold: 0.75
+
+mlflow:
+  model_name: mlops-efficiency-predictor
+  tracking_uri: http://3.15.231.90:5000

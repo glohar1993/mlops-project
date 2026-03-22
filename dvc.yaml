@@ -1,0 +1,111 @@
+# ============================================================
+# DVC Pipeline — Reproducible ML Data + Training Pipeline
+#
+# Stages run in dependency order (DAG):
+#   data_ingest → preprocess → train → evaluate → register
+#
+# Usage:
+#   dvc repro              # run all stages (skips if inputs unchanged)
+#   dvc repro train        # run from train stage onwards
+#   dvc dag                # visualise the pipeline DAG
+#   dvc metrics show       # print latest evaluation metrics
+#   dvc params diff        # show param changes vs last run
+# ============================================================
+
+stages:
+
+  # ── Stage 1: Ingest raw data from S3 ────────────────────
+  data_ingest:
+    cmd: python3 scripts/ingest_data.py
+    deps:
+      - scripts/ingest_data.py
+    params:
+      - params.yaml:
+          - data.s3_bucket
+          - data.s3_key
+          - data.raw_output_path
+    outs:
+      - artifacts/raw/data.csv:
+          cache: true
+          push: true
+
+  # ── Stage 2: Preprocess + feature engineering ────────────
+  preprocess:
+    cmd: python3 scripts/preprocess.py
+    deps:
+      - scripts/preprocess.py
+      - artifacts/raw/data.csv
+      - src/feature_registry.py
+    params:
+      - params.yaml:
+          - preprocessing.test_size
+          - preprocessing.random_state
+          - preprocessing.scale_features
+    outs:
+      - artifacts/processed/X_train.pkl:
+          cache: true
+      - artifacts/processed/X_test.pkl:
+          cache: true
+      - artifacts/processed/y_train.pkl:
+          cache: true
+      - artifacts/processed/y_test.pkl:
+          cache: true
+      - artifacts/processed/scaler.pkl:
+          cache: true
+          push: true
+
+  # ── Stage 3: Model training ──────────────────────────────
+  train:
+    cmd: python3 src/model_training.py
+    deps:
+      - src/model_training.py
+      - artifacts/processed/X_train.pkl
+      - artifacts/processed/y_train.pkl
+      - artifacts/processed/scaler.pkl
+    params:
+      - params.yaml:
+          - training.model_type
+          - training.max_iter
+          - training.C
+          - training.solver
+          - training.mlflow_experiment
+    outs:
+      - artifacts/models/model.pkl:
+          cache: true
+          push: true
+    metrics:
+      - artifacts/metrics/train_metrics.json:
+          cache: false
+
+  # ── Stage 4: Evaluate on held-out test set ───────────────
+  evaluate:
+    cmd: python3 scripts/evaluate_model.py
+    deps:
+      - scripts/evaluate_model.py
+      - artifacts/models/model.pkl
+      - artifacts/processed/X_test.pkl
+      - artifacts/processed/y_test.pkl
+    params:
+      - params.yaml:
+          - evaluation.accuracy_threshold
+    metrics:
+      - artifacts/metrics/eval_metrics.json:
+          cache: false
+    plots:
+      - artifacts/plots/confusion_matrix.json:
+          cache: false
+          x: predicted
+          y: actual
+
+  # ── Stage 5: Register model in MLflow if threshold met ───
+  register:
+    cmd: python3 scripts/register_model.py
+    deps:
+      - scripts/register_model.py
+      - artifacts/models/model.pkl
+      - artifacts/metrics/eval_metrics.json
+    params:
+      - params.yaml:
+          - evaluation.accuracy_threshold
+          - mlflow.model_name
+          - mlflow.tracking_uri

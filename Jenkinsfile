@@ -35,6 +35,11 @@ pipeline {
         AWS_REGION         = "${AWS_REGION}"
         MLFLOW_URL         = "${MLFLOW_URL}"
         AWS_DEFAULT_REGION = "${AWS_REGION}"
+        // Slack webhook for pipeline notifications (success/failure/unstable)
+        // Setup: kubectl create secret generic slack-webhook-secret \
+        //          --from-literal=SLACK_WEBHOOK_URL=https://hooks.slack.com/YOUR_WEBHOOK_URL
+        // Then in Jenkins: Manage Jenkins → Credentials → add Secret Text with id 'slack-webhook-url'
+        SLACK_WEBHOOK_URL  = credentials('slack-webhook-url')
     }
 
     // ── Branch-based deployment strategy ─────────────────────
@@ -46,13 +51,51 @@ pipeline {
     stages {
 
         // ── STAGE 1: Checkout ──────────────────────────────────
+        // In a multibranch pipeline Jenkins checks out the triggering branch automatically.
+        // We call gitCheckout with the current BRANCH_NAME so feature/* and release/* work.
         stage('Checkout') {
             steps {
                 gitCheckout(
                     'https://github.com/glohar1993/mlops-project.git',
-                    '*/main',
+                    "*/${env.BRANCH_NAME}",
                     'github-token-git'
                 )
+            }
+        }
+
+        // ── STAGE 1b: Data Version Check (DVC) ─────────────────
+        // Run immediately after checkout — pulls cached artifacts from S3,
+        // reproduces only changed pipeline stages (content-hash gated),
+        // pushes new artifacts back to DVC cache.
+        stage('Data Version Check') {
+            when { branch 'main' }
+            steps {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding',
+                                  credentialsId: 'aws-credentials']]) {
+                    sh """
+                        pip3 install --break-system-packages dvc dvc-s3 -q
+                        export PATH=\$PATH:/var/jenkins_home/.local/bin
+
+                        # Configure DVC S3 remote
+                        dvc remote add -d s3remote s3://mlops-artifacts-prod-824033490704/dvc-cache \
+                            --force 2>/dev/null || true
+                        dvc remote modify s3remote region ${AWS_REGION}
+
+                        # Pull cached artifacts from S3 (skip stages with unchanged inputs)
+                        dvc pull --run-cache || true
+
+                        # Reproduce only changed stages
+                        dvc repro --no-commit
+
+                        echo "DVC pipeline reproduced successfully"
+                        dvc status
+                    """
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'artifacts/metrics/*.json', allowEmptyArchive: true
+                }
             }
         }
 
@@ -105,10 +148,10 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
                 sh """
                     pip3 install --break-system-packages pytest pytest-cov numpy pandas scikit-learn joblib flask -q
                     export PATH=\$PATH:/var/jenkins_home/.local/bin
-                    pytest tests/unit/ \
+                    pytest tests/unit/ tests/governance/ tests/security/ tests/contract/ \
                         --cov=src \
                         --cov-report=xml:coverage.xml \
-                        --cov-fail-under=40 \
+                        --cov-fail-under=60 \
                         --junitxml=test-results.xml \
                         -v --tb=short -p no:warnings
                 """
@@ -222,7 +265,7 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
                     sed 's/namespace: default/namespace: staging/g' k8s/deployment.yaml | kubectl apply -f - -n staging
                     sed 's/namespace: default/namespace: staging/g' k8s/service.yaml    | kubectl apply -f - -n staging
 
-                    # Cap staging HPA at 2 replicas — staging is not a traffic environment
+                    # Cap staging HPA at 2 replicas during test; scale back to 1 after pipeline
                     kubectl patch hpa flask-hpa -n staging \
                         -p '{"spec":{"minReplicas":2,"maxReplicas":2}}' 2>/dev/null || true
 
@@ -276,20 +319,15 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
                     kubectl scale deployment ${APP_NAME} -n staging --replicas=2
                     kubectl rollout status deployment/${APP_NAME} -n staging --timeout=120s
 
-                    # Resolve staging LoadBalancer hostname (EKS assigns a hostname, not IP)
-                    STAGING_URL=\$(kubectl get svc flask-service -n staging \
-                        -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-                    if [ -z "\$STAGING_URL" ]; then
-                        STAGING_URL=\$(kubectl get svc flask-service -n staging \
-                            -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-                    fi
+                    # Staging service is ClusterIP — port-forward to reach it from Jenkins agent
+                    kubectl port-forward svc/flask-service 18080:80 -n staging &
+                    PF_PID=\$!
+                    sleep 5
 
-                    echo "Load testing: http://\${STAGING_URL}"
+                    STAGING_URL="localhost:18080"
+                    echo "Load testing via port-forward: http://\${STAGING_URL}"
 
                     # 20 users × 60s — realistic for t3.medium 2-pod staging
-                    # Use --exit-code-on-error 0 and parse SLO summary output instead
-                    # SLOValidationUser marks individual slow requests as locust failures,
-                    # which would cause --exit-code-on-error 1 to fail on any p99 spike.
                     TARGET_URL=http://\${STAGING_URL} \
                     locust -f tests/load/locustfile.py \
                         --headless \
@@ -298,6 +336,8 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
                         --host http://\${STAGING_URL} \
                         --only-summary \
                         --exit-code-on-error 0 2>&1 | tee /tmp/locust_results.txt
+
+                    kill \$PF_PID 2>/dev/null || true
 
                     # Parse on_test_stop SLO summary — fail pipeline only on real SLO breach
                     if grep -q "Overall SLO: FAILED" /tmp/locust_results.txt; then
@@ -325,37 +365,28 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
             }
         }
 
-        // ── STAGE 8: Deploy to Production ─────────────────────
+        // ── STAGE 8: Deploy to Production via ArgoCD ──────────
+        // ArgoCD is the single source of truth for production state.
+        // We update the image tag in the Git-tracked deployment manifest,
+        // push to the repo, and let ArgoCD self-heal the cluster.
+        // No direct kubectl apply to production — GitOps only.
         stage('Deploy → Production') {
             when { branch 'main' }
             steps {
-                k8sDeploy('default', env.GIT_COMMIT_SHORT, ECR_REGISTRY, APP_NAME)
-
                 sh """
-                    kubectl apply -f k8s/network-policies.yaml
-                    kubectl apply -f k8s/observability/prometheus.yaml
-                    kubectl apply -f k8s/observability/grafana.yaml
-                    kubectl apply -f k8s/observability/alertmanager.yaml
-                    kubectl create namespace amazon-cloudwatch --dry-run=client -o yaml | kubectl apply -f -
-                    kubectl apply -f k8s/observability/fluentbit-cloudwatch.yaml
-                    # NOTE: feast-feature-store and drift-pipeline ECR images not yet built
-                    # These are skipped to avoid ImagePullBackOff consuming cluster resources
-                    # kubectl apply -f k8s/feature-store/feast-feature-store.yaml
-                    # kubectl apply -f k8s/pipelines/pipeline-3-drift.yaml
-                    # kubectl apply -f k8s/pipelines/pipeline-scaling.yaml
-                    # kubectl apply -f k8s/ab-testing/ab-analysis-cronjob.yaml
-                    echo "Supplementary components skipped (feast/drift ECR images pending)"
+                    # Patch the image tag in k8s/deployment.yaml (ArgoCD watches this file)
+                    sed -i "s|image: ${ECR_REGISTRY}/mlops-flask-app:.*|image: ${ECR_REGISTRY}/mlops-flask-app:\${GIT_COMMIT_SHORT}|g" \
+                        k8s/deployment.yaml
+
+                    # Commit the image tag update so ArgoCD detects the change
+                    git config user.email "jenkins@mlops-ci.local"
+                    git config user.name "Jenkins CI"
+                    git add k8s/deployment.yaml
+                    git commit -m "ci: promote mlops-flask-app:\${GIT_COMMIT_SHORT} to production [skip ci]"
+                    git push origin HEAD:main
                 """
-            }
-        }
 
-        // ── STAGE 8b: ArgoCD Sync — GitOps self-heal trigger ───
-        stage('ArgoCD Sync') {
-            when { branch 'main' }
-            steps {
                 sh """
-                    set +e   # ArgoCD sync is best-effort — production was already deployed via kubectl
-
                     # Install argocd CLI to user-writable location
                     mkdir -p \$HOME/bin
                     if ! command -v argocd &>/dev/null && [ ! -f "\$HOME/bin/argocd" ]; then
@@ -365,37 +396,49 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
                     fi
                     export PATH=\$HOME/bin:\$PATH
 
-                    # ArgoCD has ClusterIP only — use kubectl port-forward from Jenkins
+                    # Port-forward ArgoCD server (ClusterIP only)
                     kubectl port-forward svc/argocd-server -n argocd 18443:443 &
                     PF_PID=\$!
                     sleep 5
 
-                    # Get ArgoCD admin password
                     ARGOCD_PWD=\$(kubectl -n argocd get secret argocd-initial-admin-secret \
-                        -o jsonpath='{.data.password}' | base64 -d 2>/dev/null)
+                        -o jsonpath='{.data.password}' | base64 -d)
 
-                    # Login via local port-forward (non-fatal)
                     argocd login localhost:18443 \
-                        --username admin \
-                        --password "\$ARGOCD_PWD" \
-                        --insecure && \
-                    argocd app sync mlops-production \
-                        --prune --timeout 120 --assumeYes && \
-                    argocd app wait mlops-production --health --timeout 120 && \
-                    echo "ArgoCD sync complete" || \
-                    echo "ArgoCD sync skipped/failed — k8s deploy already applied via kubectl"
+                        --username admin --password "\$ARGOCD_PWD" --insecure
+
+                    # Trigger sync and wait for healthy — ArgoCD applies the Git state
+                    argocd app sync mlops-production --prune --timeout 120 --assumeYes
+                    argocd app wait mlops-production --health --timeout 180
 
                     kill \$PF_PID 2>/dev/null || true
-                    exit 0   # Always succeed — ArgoCD is informational
+                    echo "ArgoCD production deploy complete — image \${GIT_COMMIT_SHORT}"
+                """
+
+                sh """
+                    # Apply supplementary infra (observability stack, network policies)
+                    # These are idempotent and not managed by ArgoCD
+                    kubectl apply -f k8s/network-policies.yaml
+                    kubectl apply -f k8s/external-secrets.yaml
+                    kubectl apply -f k8s/ingress-alb.yaml
+                    kubectl apply -f k8s/observability/prometheus.yaml
+                    kubectl apply -f k8s/observability/grafana.yaml
+                    kubectl apply -f k8s/observability/alertmanager.yaml
+                    kubectl apply -f k8s/observability/jaeger.yaml
+                    kubectl create namespace amazon-cloudwatch --dry-run=client -o yaml | kubectl apply -f -
+                    kubectl apply -f k8s/observability/fluentbit-cloudwatch.yaml
+                    kubectl apply -f k8s/pipelines/pipeline-3-drift.yaml
+                    kubectl apply -f k8s/pipelines/pipeline-scaling.yaml
+                    kubectl apply -f k8s/ab-testing/ab-analysis-cronjob.yaml
                 """
             }
         }
 
-        // ── STAGE 8c: A/B Test Rollout (on release branches) ───
+        // ── STAGE 8b: A/B Test Rollout (on release branches) ───
         stage('A/B Test Rollout') {
             when {
                 anyOf { branch 'release/*'; branch 'main' }
-                expression { return params.AB_TEST_ENABLED == 'true' }
+                expression { return params.AB_TEST_ENABLED == true }
             }
             steps {
                 sh """
@@ -470,21 +513,23 @@ EOF
 
     post {
         success {
-            echo "PIPELINE SUCCESS — ${env.GIT_BRANCH_NAME} | ${env.GIT_COMMIT_SHORT}"
-            // slackSend(channel: '#mlops-alerts', color: 'good',
-            //   message: "✅ Pipeline SUCCESS — ${env.GIT_BRANCH_NAME} | ${env.GIT_COMMIT_SHORT}")
+            echo "PIPELINE SUCCESS — ${env.BRANCH_NAME} | ${env.GIT_COMMIT_SHORT}"
+            slackSend(webhookUrl: env.SLACK_WEBHOOK_URL, channel: '#mlops-alerts', color: 'good',
+              message: "✅ Pipeline SUCCESS — ${env.BRANCH_NAME} | ${env.GIT_COMMIT_SHORT}")
         }
         failure {
-            echo "PIPELINE FAILED — ${env.GIT_BRANCH_NAME} | ${env.GIT_COMMIT_SHORT} — check logs"
-            // slackSend(channel: '#mlops-alerts', color: 'danger',
-            //   message: "❌ Pipeline FAILED — ${env.GIT_BRANCH_NAME} | Build: ${env.BUILD_URL}")
+            echo "PIPELINE FAILED — ${env.BRANCH_NAME} | ${env.GIT_COMMIT_SHORT} — check logs"
+            slackSend(webhookUrl: env.SLACK_WEBHOOK_URL, channel: '#mlops-alerts', color: 'danger',
+              message: "❌ Pipeline FAILED — ${env.BRANCH_NAME} | Build: ${env.BUILD_URL}")
         }
         unstable {
-            echo "PIPELINE UNSTABLE — ${env.GIT_BRANCH_NAME} | ${env.GIT_COMMIT_SHORT}"
-            // slackSend(channel: '#mlops-alerts', color: 'warning',
-            //   message: "⚠️ Pipeline UNSTABLE — ${env.GIT_BRANCH_NAME}")
+            echo "PIPELINE UNSTABLE — ${env.BRANCH_NAME} | ${env.GIT_COMMIT_SHORT}"
+            slackSend(webhookUrl: env.SLACK_WEBHOOK_URL, channel: '#mlops-alerts', color: 'warning',
+              message: "⚠️ Pipeline UNSTABLE — ${env.BRANCH_NAME}")
         }
         always {
+            // Scale staging back to 1 replica after pipeline to free cluster capacity
+            sh 'kubectl patch hpa flask-hpa -n staging -p \'{"spec":{"minReplicas":1,"maxReplicas":2}}\' 2>/dev/null || true'
             cleanWs()
         }
     }

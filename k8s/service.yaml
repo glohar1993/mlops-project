@@ -3,7 +3,9 @@ kind: Service
 metadata:
   name: flask-service
 spec:
-  type: LoadBalancer
+  # ClusterIP — traffic enters via ALB Ingress, not directly via LoadBalancer
+  # ALB handles: TLS termination, auth (Cognito/OIDC), rate-limiting (WAF)
+  type: ClusterIP
   selector:
     app: flask-app
   ports:

@@ -29,19 +29,6 @@ data:
   AWS_DEFAULT_REGION:                   "us-east-2"
 
 ---
-# ── Persistent Volume for DAGs + DB ───────────────────────────
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: airflow-pvc
-  namespace: airflow
-spec:
-  accessModes: [ReadWriteOnce]
-  resources:
-    requests:
-      storage: 5Gi
-
----
 # ── Airflow Deployment ────────────────────────────────────────
 apiVersion: apps/v1
 kind: Deployment
@@ -149,8 +136,7 @@ spec:
 
       volumes:
         - name: airflow-storage
-          persistentVolumeClaim:
-            claimName: airflow-pvc
+          emptyDir: {}    # DAGs loaded from S3 on startup; no persistent storage needed
 
 ---
 # ── Airflow Service (LoadBalancer for UI) ─────────────────────

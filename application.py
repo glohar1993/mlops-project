@@ -3,10 +3,9 @@ MLOps Production Serving Application
 =====================================
 Enterprise-grade Flask app with:
   - REST API predict endpoint (/predict)
-  - Background drift monitoring (30s loop)
-  - Model hot-swap (zero restart retraining)
   - MLflow model loading with local fallback
   - Full Prometheus observability
+  - Drift monitored by K8s CronJob (not background thread)
 """
 
 from flask import Flask, render_template, request, jsonify, Response
@@ -22,6 +21,7 @@ from prometheus_client import Counter, Histogram, Gauge
 from src.drift_detector import DriftDetector
 from src.retraining_pipeline import RetrainingPipeline
 from src.feature_registry import FEATURE_COLUMNS, LABEL_MAP_REVERSE, LABEL_MAP
+from src.tracing import tracer
 
 app = Flask(__name__)
 
@@ -180,62 +180,6 @@ retrain_pipeline = RetrainingPipeline()
 model_accuracy.set(retrain_pipeline.get_current_accuracy())
 
 # ================================================================== #
-#  Background Drift Monitor (every 30 seconds)
-# ================================================================== #
-retraining_in_progress = False
-
-
-def drift_monitor_loop():
-    global model, scaler, retraining_in_progress
-
-    while True:
-        time.sleep(30)
-        try:
-            drift_result = drift_detector.check_drift()
-
-            prediction_drift_score.set(drift_result["prediction_drift_score"])
-            feature_drift_score.set(drift_result["feature_drift_score"])
-            drift_status_gauge.set(STATUS_MAP.get(drift_result["status"], 0))
-
-            print(f"[DriftMonitor] Status={drift_result['status']} "
-                  f"PredDrift={drift_result['prediction_drift_score']} "
-                  f"FeatDrift={drift_result['feature_drift_score']}")
-
-            if drift_result["drift_detected"] and not retraining_in_progress:
-                retraining_in_progress = True
-                print("[DriftMonitor] CRITICAL drift — triggering retraining...")
-                retraining_counter.inc()
-
-                retrain_result = retrain_pipeline.retrain()
-
-                if retrain_result["model_replaced"]:
-                    # Try to load fresh model from MLflow, fallback to local
-                    _mlflow_model, _ = load_model_from_mlflow()
-                    with model_lock:
-                        model  = _mlflow_model if _mlflow_model else joblib.load(MODEL_PATH)
-                        scaler = joblib.load(SCALER_PATH)
-                    retraining_success.set(1)
-                    model_accuracy.set(retrain_result["new_accuracy"])
-                    print(f"[DriftMonitor] Model hot-swapped! "
-                          f"Accuracy: {retrain_result['new_accuracy']:.2%} "
-                          f"MLflow v{_current_model_version}")
-                    drift_detector.recent_predictions.clear()
-                    drift_detector.recent_inputs.clear()
-                else:
-                    retraining_success.set(0)
-                    print(f"[DriftMonitor] Rolled back: {retrain_result['reason']}")
-
-                retraining_in_progress = False
-
-        except Exception as e:
-            print(f"[DriftMonitor] Error: {e}")
-            retraining_in_progress = False
-
-
-monitor_thread = threading.Thread(target=drift_monitor_loop, daemon=True)
-monitor_thread.start()
-
-# ================================================================== #
 #  Routes
 # ================================================================== #
 @app.route("/", methods=["GET", "POST"])
@@ -291,6 +235,7 @@ def predict_api():
         }
     """
     start = time.time()
+    span_id = tracer.start_span("predict", {"model_version": str(_current_model_version)})
     try:
         data = request.get_json(force=True, silent=True)
 
@@ -355,6 +300,7 @@ def predict_api():
         ab_model = request.headers.get("X-Model-Variant", "primary")
         ab_test_requests.labels(model=ab_model).inc()
 
+        tracer.finish_span(span_id, extra={"prediction": label, "confidence": confidence})
         return jsonify({
             "prediction":    label,
             "class_id":      int(pred),
@@ -365,6 +311,7 @@ def predict_api():
 
     except Exception as e:
         prediction_errors.inc()
+        tracer.finish_span(span_id, error=True, extra={"error": str(e)})
         return jsonify({"error": str(e)}), 500
     finally:
         prediction_latency.observe(time.time() - start)
@@ -459,38 +406,6 @@ def record_dag_event():
     return jsonify({"status": "recorded", "event": event, "dag_id": dag_id}), 200
 
 
-@app.route("/retrain", methods=["POST"])
-def manual_retrain():
-    """
-    Trigger retraining and model hot-swap.
-    Called by:
-      - Airflow deploy_to_eks task (after DAG promotes new MLflow model)
-      - CronJob drift pipeline on CRITICAL drift
-      - Manual testing
-    """
-    global model, scaler
-    logs = []
-    retrain_result = retrain_pipeline.retrain(log_callback=logs.append)
-
-    if retrain_result["model_replaced"]:
-        # Prefer MLflow version, fallback to local file
-        _mlflow_model, _ = load_model_from_mlflow()
-        with model_lock:
-            model  = _mlflow_model if _mlflow_model else joblib.load(MODEL_PATH)
-            scaler = joblib.load(SCALER_PATH)
-        model_accuracy.set(retrain_result["new_accuracy"])
-        retraining_success.set(1)
-    else:
-        retraining_success.set(0)
-
-    retraining_counter.inc()
-
-    return jsonify({
-        **retrain_result,
-        "model_version": _current_model_version,
-        "logs":          logs,
-    }), 200
-
 
 @app.route("/explain", methods=["POST"])
 def explain_prediction():
@@ -579,97 +494,6 @@ def explain_prediction():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
-# ================================================================== #
-#  Slack OAuth Integration — one-click install flow
-# ================================================================== #
-SLACK_CLIENT_ID     = os.getenv("SLACK_CLIENT_ID",     "10745071510533.10746441215142")
-SLACK_CLIENT_SECRET = os.getenv("SLACK_CLIENT_SECRET", "7ae986c2a7472bd2df921dda1290b337")
-SLACK_REDIRECT_URI  = os.getenv("SLACK_REDIRECT_URI",  "http://18.189.188.181:30080/slack/callback")
-_SLACK_WEBHOOK_FILE = "/app/config/slack_webhook_url.txt"
-
-
-@app.route("/slack/install")
-def slack_install():
-    """Redirect to Slack OAuth authorization page."""
-    oauth_url = (
-        "https://slack.com/oauth/v2/authorize"
-        f"?client_id={SLACK_CLIENT_ID}"
-        "&scope=incoming-webhook,chat:write"
-        f"&redirect_uri={SLACK_REDIRECT_URI}"
-    )
-    from flask import redirect as flask_redirect
-    return flask_redirect(oauth_url)
-
-
-@app.route("/slack/callback")
-def slack_callback():
-    """Handle Slack OAuth callback — exchange code for webhook URL."""
-    import urllib.request, urllib.parse
-    code  = request.args.get("code")
-    error = request.args.get("error")
-
-    if error:
-        return f"<h2>Slack OAuth error: {error}</h2>", 400
-    if not code:
-        return "<h2>No code returned from Slack</h2>", 400
-
-    # Exchange code for access token
-    payload = urllib.parse.urlencode({
-        "client_id":     SLACK_CLIENT_ID,
-        "client_secret": SLACK_CLIENT_SECRET,
-        "code":          code,
-        "redirect_uri":  SLACK_REDIRECT_URI,
-    }).encode()
-
-    req = urllib.request.Request(
-        "https://slack.com/api/oauth.v2.access",
-        data=payload,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-    )
-    with urllib.request.urlopen(req) as resp:
-        import json as _json
-        result = _json.loads(resp.read().decode())
-
-    if not result.get("ok"):
-        return f"<h2>OAuth failed: {result.get('error')}</h2>", 400
-
-    webhook_url = (
-        result.get("incoming_webhook", {}).get("url") or ""
-    )
-    channel = result.get("incoming_webhook", {}).get("channel", "unknown")
-    team    = result.get("team", {}).get("name", "unknown")
-
-    # Persist the webhook URL to a local file
-    os.makedirs(os.path.dirname(_SLACK_WEBHOOK_FILE), exist_ok=True)
-    with open(_SLACK_WEBHOOK_FILE, "w") as f:
-        f.write(webhook_url)
-
-    html = f"""<!DOCTYPE html>
-<html><head><title>Slack Connected</title>
-<style>body{{font-family:monospace;padding:40px;background:#0d1117;color:#58d68d}}
-pre{{background:#1c1c1c;padding:20px;border-radius:8px;color:#f8f8f2;word-break:break-all}}</style>
-</head><body>
-<h1>Slack Connected!</h1>
-<p>Workspace: <b>{team}</b> | Channel: <b>{channel}</b></p>
-<h3>Webhook URL (paste into AlertManager ConfigMap):</h3>
-<pre>{webhook_url}</pre>
-<p>Now run:<br>
-<code>kubectl patch configmap alertmanager-config -n default --type merge -p '
-{{"data":{{"alertmanager.yml":"(replace slack_api_url with the URL above)"}}}}'</code></p>
-</body></html>"""
-    return html, 200
-
-
-@app.route("/slack/webhook-url")
-def slack_webhook_url():
-    """Return the stored Slack webhook URL (for automated ConfigMap patching)."""
-    try:
-        with open(_SLACK_WEBHOOK_FILE) as f:
-            url = f.read().strip()
-        return jsonify({"webhook_url": url, "configured": bool(url)}), 200
-    except FileNotFoundError:
-        return jsonify({"webhook_url": None, "configured": False}), 200
 
 
 if __name__ == "__main__":

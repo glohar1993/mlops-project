@@ -1,8 +1,10 @@
 """
-Security Tests — Input Validation & Auth Security
-===================================================
-Tests: SQL injection, XSS payloads, token tampering,
-       boundary values, oversized inputs, injection in feature values
+Security Tests — Input Validation & Boundary Security
+======================================================
+Tests: SQL injection, XSS payloads, boundary values,
+       oversized inputs, injection in feature values.
+Note: JWT/API-key auth is now enforced at the ALB layer (Cognito/OIDC),
+      not inside Flask — those tests are removed.
 """
 
 import sys
@@ -87,53 +89,6 @@ class TestInjectionAttacks:
 
 
 # ════════════════════════════════════════════════════════════════
-#  Token Security
-# ════════════════════════════════════════════════════════════════
-
-class TestTokenSecurity:
-
-    def test_validate_token_with_modified_role_fails(self):
-        """Changing JWT payload without re-signing must be rejected."""
-        from src.auth import generate_token, validate_token
-        import base64, json as _json
-        token = generate_token("svc", "viewer")
-        h, p, sig = token.split(".")
-        # Decode and modify payload
-        payload_bytes = base64.urlsafe_b64decode(p + "==")
-        payload_data  = _json.loads(payload_bytes)
-        payload_data["role"] = "admin"   # escalate role
-        modified_p = base64.urlsafe_b64encode(
-            _json.dumps(payload_data).encode()
-        ).rstrip(b"=").decode()
-        bad_token = f"{h}.{modified_p}.{sig}"
-        assert validate_token(bad_token) is None
-
-    def test_validate_empty_string(self):
-        from src.auth import validate_token
-        assert validate_token("") is None
-
-    def test_validate_none_does_not_crash(self):
-        from src.auth import validate_token
-        try:
-            result = validate_token(None)
-            assert result is None
-        except Exception:
-            pass   # acceptable as long as it doesn't produce a valid payload
-
-    def test_different_secret_key_invalid(self):
-        """Token signed with wrong key must be rejected."""
-        from src.auth import generate_token, validate_token
-        import src.auth as auth_mod
-        original_secret = auth_mod.JWT_SECRET
-        auth_mod.JWT_SECRET = "different-secret"
-        try:
-            token = generate_token("svc", "admin")
-        finally:
-            auth_mod.JWT_SECRET = original_secret
-        assert validate_token(token) is None
-
-
-# ════════════════════════════════════════════════════════════════
 #  Boundary Values
 # ════════════════════════════════════════════════════════════════
 
@@ -179,30 +134,3 @@ class TestBoundaryValues:
         assert rv.status_code == 200
 
 
-# ════════════════════════════════════════════════════════════════
-#  API Key Security
-# ════════════════════════════════════════════════════════════════
-
-class TestAPIKeySecurity:
-
-    @pytest.mark.parametrize("bad_key", [
-        "",
-        "admin",
-        "mlops-admin",
-        "mlops-admin-key",
-        "MLOPS-ADMIN-KEY-DEV",   # case sensitive
-        " mlops-admin-key-dev",  # leading space
-        "mlops-admin-key-dev ",  # trailing space
-    ])
-    def test_invalid_api_keys(self, bad_key):
-        from src.auth import API_KEYS
-        assert bad_key not in API_KEYS
-
-    def test_no_api_key_get_current_user_returns_none(self):
-        """get_current_user() in context with no headers returns None."""
-        from src.auth import get_current_user
-        import application
-        with application.app.test_request_context("/predict",
-                                                   method="POST"):
-            user = get_current_user()
-            assert user is None

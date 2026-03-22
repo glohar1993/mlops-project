@@ -25,7 +25,7 @@ metadata:
     component: observability
 spec:
   schedule: "*/30 * * * *"   # Run every 30 min (not every 2 min — too aggressive for t3.medium)
-  suspend: true               # SUSPENDED: drift-pipeline ECR image not yet built — enable after pushing image
+  suspend: false              # ACTIVE: drift-pipeline image built and pushed to ECR
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit:     3

@@ -1,0 +1,6 @@
+[core]
+    no_scm = True
+    remote = s3store
+['remote "s3store"']
+    url = s3://mlops-artifacts-prod-824033490704/dvc-data
+    region = us-east-2

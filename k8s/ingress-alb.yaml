@@ -1,0 +1,104 @@
+# ============================================================
+# AWS ALB Ingress — Production API Gateway
+#
+# Phase 1 (current): HTTP only — internet-facing ALB routes to ClusterIP flask-service
+# Phase 2 (next): Add TLS cert ARN + Cognito OIDC auth + WAF rate limiting
+#
+# Prerequisites (already completed):
+#   ✅ AWS Load Balancer Controller installed in kube-system
+#   ✅ flask-service changed to ClusterIP
+#   ✅ Public subnets tagged: kubernetes.io/role/elb=1
+#
+# To add TLS later:
+#   1. Issue ACM certificate for your domain → get ARN
+#   2. Add annotation: alb.ingress.kubernetes.io/certificate-arn: <ARN>
+#   3. Change listen-ports to '[{"HTTPS": 443}]'
+#
+# To add Cognito auth later:
+#   1. Create Cognito User Pool + App Client
+#   2. Add annotation: alb.ingress.kubernetes.io/auth-type: cognito
+#   3. Add annotation: alb.ingress.kubernetes.io/auth-idp-cognito: '{"UserPoolArn":...}'
+#
+# To add WAF rate limiting later:
+#   1. Create WAF WebACL with rate rule (1000 req/5min per IP)
+#   2. Add annotation: alb.ingress.kubernetes.io/wafv2-acl-arn: <WebACL ARN>
+# ============================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: flask-alb-ingress
+  namespace: default
+  annotations:
+    # ALB controller
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+
+    # HTTP only (add certificate-arn annotation for HTTPS when cert is provisioned)
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+
+    # Health check
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "15"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: "3"
+
+    # EKS public subnets (us-east-2)
+    alb.ingress.kubernetes.io/subnets: "subnet-0f8ec73fbabc49a5d, subnet-0f918a9a048e6ff3b"
+
+    # Access logs disabled (enable after adding ELB delivery policy to S3 bucket)
+    # To enable: add s3:PutObject permission for delivery.elasticloadbalancing.amazonaws.com
+    alb.ingress.kubernetes.io/load-balancer-attributes: >-
+      access_logs.s3.enabled=false
+
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: flask-service
+                port:
+                  number: 80
+
+          - path: /predict
+            pathType: Prefix
+            backend:
+              service:
+                name: flask-service
+                port:
+                  number: 80
+
+          - path: /explain
+            pathType: Exact
+            backend:
+              service:
+                name: flask-service
+                port:
+                  number: 80
+
+          - path: /drift
+            pathType: Exact
+            backend:
+              service:
+                name: flask-service
+                port:
+                  number: 80
+
+          - path: /dag-event
+            pathType: Exact
+            backend:
+              service:
+                name: flask-service
+                port:
+                  number: 80
+
+          - path: /dag-duration
+            pathType: Exact
+            backend:
+              service:
+                name: flask-service
+                port:
+                  number: 80
