@@ -70,8 +70,10 @@ pipeline {
         stage('Data Version Check') {
             when { branch 'main' }
             steps {
-                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding',
-                                  credentialsId: 'aws-credentials']]) {
+                withCredentials([usernamePassword(
+                                  credentialsId: 'aws-credentials',
+                                  usernameVariable: 'AWS_ACCESS_KEY_ID',
+                                  passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
                     sh """
                         pip3 install --break-system-packages dvc dvc-s3 -q
                         export PATH=\$PATH:/var/jenkins_home/.local/bin
