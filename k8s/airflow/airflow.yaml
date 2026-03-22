@@ -17,7 +17,7 @@ metadata:
   name: airflow-config
   namespace: airflow
 data:
-  AIRFLOW__CORE__EXECUTOR:              "LocalExecutor"
+  AIRFLOW__CORE__EXECUTOR:              "SequentialExecutor"   # SequentialExecutor works with SQLite; upgrade to CeleryExecutor when RDS is ready
   AIRFLOW__CORE__LOAD_EXAMPLES:         "False"
   AIRFLOW__CORE__DAGS_FOLDER:           "/opt/airflow/dags"
   AIRFLOW__DATABASE__SQL_ALCHEMY_CONN:  "sqlite:////opt/airflow/airflow.db"
