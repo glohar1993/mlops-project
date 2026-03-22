@@ -5,7 +5,7 @@ setuptools
 pandas
 numpy==1.26.4
 scikit-learn==1.6.1
-pyarrow==13.0.0
+pyarrow==18.1.0
 joblib
 
 # Web serving
@@ -17,7 +17,7 @@ prometheus-flask-exporter
 prometheus-client
 
 # Experiment tracking
-mlflow==2.8.1
+mlflow==3.10.1
 boto3
 
 # Visualization

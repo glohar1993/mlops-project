@@ -1,0 +1,40 @@
+# Python virtual environments — never copy into image
+venv/
+.venv/
+env/
+.env/
+
+# Cache and build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Test and coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
+
+# MLflow local tracking
+mlruns/
+
+# Git
+.git/
+.gitignore
+
+# Terraform — provider binaries have Go CVEs, no business in production image
+terraform/
+.terraform/
+*.tfstate
+*.tfstate.backup
