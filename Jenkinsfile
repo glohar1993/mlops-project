@@ -420,9 +420,13 @@ print(f'Data validation PASSED — {len(df)} rows, {len(df.columns)} cols, null%
                     argocd login localhost:18443 \
                         --username admin --password "\$ARGOCD_PWD" --insecure
 
-                    # Trigger sync and wait for healthy — ArgoCD applies the Git state
+                    # Trigger sync — ArgoCD applies the Git state
                     argocd app sync mlops-production --prune --timeout 120 --assumeYes
-                    argocd app wait mlops-production --health --timeout 180
+
+                    # Wait for rollout using kubectl (more reliable than argocd wait during startup)
+                    # Pods have a 150s startup probe so we give 5 minutes
+                    kubectl rollout status deployment/flask-deployment \
+                        -n default --timeout=300s
 
                     kill \$PF_PID 2>/dev/null || true
                     echo "ArgoCD production deploy complete — image \${GIT_COMMIT_SHORT}"
