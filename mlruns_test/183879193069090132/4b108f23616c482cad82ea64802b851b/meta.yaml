@@ -1,0 +1,15 @@
+artifact_uri: file:///Users/ganeshlohar/Downloads/MATERIALS/ALL Materials - Jenkins
+  Shared Library Project/CODE/PROJECT/mlruns_test/183879193069090132/4b108f23616c482cad82ea64802b851b/artifacts
+end_time: 1773998092922
+entry_point_name: ''
+experiment_id: '183879193069090132'
+lifecycle_stage: active
+run_id: 4b108f23616c482cad82ea64802b851b
+run_name: train_e2e_test_20260320_091439
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1773998080379
+status: 3
+tags: []
+user_id: ganeshlohar

@@ -1,0 +1,11 @@
+artifact_location: file:///Users/ganeshlohar/Downloads/MATERIALS/ALL Materials - Jenkins
+  Shared Library Project/CODE/PROJECT/mlruns_test/183879193069090132/models/m-5f86faf504f8406382d110772d948ee5/artifacts
+creation_timestamp: 1773998023525
+experiment_id: '183879193069090132'
+last_updated_timestamp: 1773998028031
+model_id: m-5f86faf504f8406382d110772d948ee5
+model_type: null
+name: model
+source_run_id: 01224b84d30242818ec9ddc14b4ab4d2
+status: 2
+status_message: null

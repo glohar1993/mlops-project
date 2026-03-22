@@ -1,0 +1,23 @@
+artifact_path: file:///Users/ganeshlohar/Downloads/MATERIALS/ALL Materials - Jenkins
+  Shared Library Project/CODE/PROJECT/mlruns_test/183879193069090132/models/m-8db3476c87d343e5a8779451a4ffd507/artifacts
+flavors:
+  python_function:
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.sklearn
+    model_path: model.pkl
+    predict_fn: predict
+    python_version: 3.12.7
+  sklearn:
+    code: null
+    pickled_model: model.pkl
+    serialization_format: cloudpickle
+    sklearn_version: 1.7.1
+mlflow_version: 3.2.0
+model_id: m-8db3476c87d343e5a8779451a4ffd507
+model_size_bytes: 1079
+model_uuid: m-8db3476c87d343e5a8779451a4ffd507
+prompts: null
+run_id: 18283991f891427091b6dab09d57ae7f
+utc_time_created: '2026-03-22 14:13:19.700673'

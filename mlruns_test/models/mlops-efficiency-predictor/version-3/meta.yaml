@@ -1,0 +1,19 @@
+aliases: []
+creation_timestamp: 1774188805085
+current_stage: None
+deployment_job_state: null
+description: null
+last_updated_timestamp: 1774188805085
+metrics: null
+model_id: m-8db3476c87d343e5a8779451a4ffd507
+name: mlops-efficiency-predictor
+params: null
+run_id: 18283991f891427091b6dab09d57ae7f
+run_link: null
+source: models:/m-8db3476c87d343e5a8779451a4ffd507
+status: READY
+status_message: null
+storage_location: file:///Users/ganeshlohar/Downloads/MATERIALS/ALL Materials - Jenkins
+  Shared Library Project/CODE/PROJECT/mlruns_test/183879193069090132/models/m-8db3476c87d343e5a8779451a4ffd507/artifacts
+user_id: null
+version: 3
