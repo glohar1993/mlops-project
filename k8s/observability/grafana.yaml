@@ -44,18 +44,19 @@ data:
   dashboard.yaml: |
     apiVersion: 1
     providers:
-      - name: 'MLOps Dashboards'
+      - name: 'MLOps Production Dashboards'
         folder: 'MLOps'
         type: file
         disableDeletion: false
-        updateIntervalSeconds: 10
+        allowUiUpdates: false
+        updateIntervalSeconds: 30
         options:
           path: /var/lib/grafana/dashboards
       - name: 'MLOps Logs'
         folder: 'MLOps Logs'
         type: file
         disableDeletion: false
-        updateIntervalSeconds: 10
+        updateIntervalSeconds: 30
         options:
           path: /var/lib/grafana/dashboards/logs
 
@@ -462,7 +463,8 @@ spec:
               mountPath: /etc/grafana/provisioning/dashboards
             - name: alerting-provisioning
               mountPath: /etc/grafana/provisioning/alerting
-            - name: dashboard-json
+            # All production dashboards merged into one directory via projected volume
+            - name: dashboards-production
               mountPath: /var/lib/grafana/dashboards
             - name: dashboard-logs-json
               mountPath: /var/lib/grafana/dashboards/logs
@@ -476,9 +478,20 @@ spec:
         - name: alerting-provisioning
           configMap:
             name: grafana-alerting-provisioning
-        - name: dashboard-json
-          configMap:
-            name: grafana-dashboard-mlops
+        # Projected volume: merges all 5 dashboard ConfigMaps into /var/lib/grafana/dashboards
+        - name: dashboards-production
+          projected:
+            sources:
+              - configMap:
+                  name: grafana-dashboard-mlops
+              - configMap:
+                  name: grafana-dashboard-command-center
+              - configMap:
+                  name: grafana-dashboard-model-perf
+              - configMap:
+                  name: grafana-dashboard-drift
+              - configMap:
+                  name: grafana-dashboard-pipeline
         - name: dashboard-logs-json
           configMap:
             name: grafana-dashboard-logs

@@ -24,12 +24,19 @@ terraform {
     }
   }
 
-  # Store state in S3 (after first apply, enable this)
-  # backend "s3" {
-  #   bucket = "mlops-terraform-state"
-  #   key    = "mlops/terraform.tfstate"
-  #   region = "us-east-1"
-  # }
+  # Remote state — S3 + DynamoDB locking (safe multi-user collaboration)
+  # Run once: aws s3 mb s3://mlops-terraform-state --region us-east-1
+  #           aws dynamodb create-table --table-name terraform-lock \
+  #             --attribute-definitions AttributeName=LockID,AttributeType=S \
+  #             --key-schema AttributeName=LockID,KeyType=HASH \
+  #             --billing-mode PAY_PER_REQUEST --region us-east-1
+  backend "s3" {
+    bucket         = "mlops-terraform-state-824033490704"
+    key            = "mlops/terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "terraform-lock"
+    encrypt        = true
+  }
 }
 
 provider "aws" {
@@ -125,4 +132,36 @@ module "mlflow" {
   subnet_id     = module.vpc.public_subnet_ids[0]
   instance_type = "t3.small"
   s3_bucket     = module.s3.artifacts_bucket_name
+  # Pass RDS endpoint so MLflow EC2 startup uses PostgreSQL, not SQLite
+  rds_endpoint  = module.rds.db_endpoint
+  rds_secret_arn = module.rds.secret_arn
+}
+
+# ─────────────────────────────────────────
+#  PHASE 3b: RDS PostgreSQL (MLflow Backend)
+#  Replaces SQLite — supports concurrent DAG writes
+# ─────────────────────────────────────────
+# Data sources: look up existing VPC/subnets from running cluster
+data "aws_vpc" "existing" {
+  id = "vpc-045c88da3a33c68da"
+}
+
+data "aws_subnets" "existing" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.existing.id]
+  }
+}
+
+module "rds" {
+  source      = "./modules/rds"
+  project     = var.project
+  environment = var.environment
+  vpc_id      = data.aws_vpc.existing.id
+
+  # Use existing public subnets (demo env — private subnets not provisioned)
+  private_subnet_ids         = data.aws_subnets.existing.ids
+  allowed_security_group_ids = ["sg-095e130ccbf3f437e"]  # EKS cluster SG
+
+  instance_class = "db.t3.micro"
 }

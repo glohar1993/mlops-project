@@ -115,6 +115,11 @@ spec:
                   fieldPath: spec.nodeName
             - name: PROMETHEUS_MULTIPROC_DIR
               value: "/tmp/prometheus_multiproc"
+            # OpenTelemetry — sends traces to Jaeger (K8s internal DNS)
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://jaeger-service.default.svc.cluster.local:4317"
+            - name: OTEL_SERVICE_NAME
+              value: "mlops-serving"
 
           volumeMounts:
             - name: prometheus-multiproc
