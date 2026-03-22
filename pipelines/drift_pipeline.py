@@ -15,6 +15,7 @@ In production this would:
   - Trigger a separate Argo Workflow / Kubeflow pipeline
 """
 
+import argparse
 import requests
 import json
 import time
@@ -209,4 +210,24 @@ def run():
 
 
 if __name__ == "__main__":
-    run()
+    parser = argparse.ArgumentParser(
+        description="MLOps Drift Detection Pipeline — queries /drift endpoint, "
+                    "evaluates PSI, triggers Airflow DAG 2 on CRITICAL drift."
+    )
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Check config and connectivity only, do not trigger retraining")
+    parser.add_argument("--serving-url", default=None,
+                        help=f"Override SERVING_APP_URL (default: {SERVING_APP_URL})")
+    args = parser.parse_args()
+
+    if args.serving_url:
+        SERVING_APP_URL = args.serving_url
+
+    if args.dry_run:
+        print(f"[DRY RUN] SERVING_APP_URL : {SERVING_APP_URL}")
+        print(f"[DRY RUN] PSI_WARNING     : {PSI_WARNING}")
+        print(f"[DRY RUN] PSI_CRITICAL    : {PSI_CRITICAL}")
+        print(f"[DRY RUN] AIRFLOW_API_URL : {AIRFLOW_API_URL or '(not set)'}")
+        print("[DRY RUN] Config OK — exiting without running pipeline")
+    else:
+        run()

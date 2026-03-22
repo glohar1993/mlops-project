@@ -1,0 +1,27 @@
+# ============================================================
+# Drift Detection Pipeline — K8s CronJob Image
+# Runs pipelines/drift_pipeline.py every 30 min
+# ============================================================
+FROM python:3.11-slim
+
+# Non-root user named drift-runner (uid 999)
+RUN groupadd -g 999 drift-runner && \
+    useradd -u 999 -g drift-runner -m -s /bin/bash drift-runner
+
+WORKDIR /app
+
+# Install only packages actually imported by drift_pipeline.py
+RUN pip install --no-cache-dir \
+    requests==2.31.0 \
+    boto3==1.34.0
+
+# Copy only the required source files (no dev deps, no test packages)
+COPY pipelines/drift_pipeline.py pipelines/drift_pipeline.py
+COPY src/drift_detector.py       src/drift_detector.py
+COPY src/feature_registry.py     src/feature_registry.py
+COPY src/logger.py               src/logger.py
+RUN touch src/__init__.py
+
+USER drift-runner
+
+ENTRYPOINT ["python", "pipelines/drift_pipeline.py"]
