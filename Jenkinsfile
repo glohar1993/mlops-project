@@ -91,6 +91,9 @@ pipeline {
 
                         echo "DVC version check complete"
                         dvc status || true
+
+                        # Restore git-tracked data files that DVC may have removed during pull/repro
+                        git checkout HEAD -- artifacts/raw/data.csv 2>/dev/null || true
                     """
                 }
             }
